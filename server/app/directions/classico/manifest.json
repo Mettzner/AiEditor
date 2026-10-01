@@ -1,0 +1,12 @@
+{
+  "name": "Clássico",
+  "description": "Cortes secos, crossfade curto só em mudanças de capítulo e textos simples para números, nomes e datas.",
+  "image": "card.svg",
+  "params": {
+    "duration_variation": 0.3,
+    "crossfade_seconds": 0.3,
+    "overlay_min_gap_seconds": 20,
+    "overlay_duration_seconds": 3.5,
+    "chapter_title_seconds": 3.0
+  }
+}

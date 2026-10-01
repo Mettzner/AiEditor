@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1b2330"/>
+      <stop offset="1" stop-color="#0b0f15"/>
+    </linearGradient>
+  </defs>
+  <rect width="320" height="180" fill="url(#g)"/>
+  <rect x="0" y="0" width="104" height="180" fill="#243042"/>
+  <rect x="108" y="0" width="104" height="180" fill="#1a2433"/>
+  <rect x="216" y="0" width="104" height="180" fill="#2c3a50"/>
+  <rect x="24" y="126" width="150" height="26" rx="3" fill="#E63946"/>
+  <text x="34" y="144" font-family="Arial, sans-serif" font-weight="700" font-size="14" fill="#fff">1987 — OHIO</text>
+  <text x="160" y="70" text-anchor="middle" font-family="Arial, sans-serif" font-weight="700" font-size="22" fill="#fff" letter-spacing="3">CAPÍTULO I</text>
+</svg>

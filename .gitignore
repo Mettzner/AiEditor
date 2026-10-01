@@ -1,0 +1,11 @@
+data/
+!data/.gitkeep
+__pycache__/
+*.pyc
+.venv/
+server/.venv/
+node_modules/
+.next/
+web/.env*.local
+client_secret*.json
+*.egg-info/
