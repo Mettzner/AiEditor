@@ -1,0 +1,49 @@
+# Gera o instalador a cada tag v* (ex.: git tag v1.0.1 && git push --tags) e anexa à Release do GitHub.
+# EMPACOTAMENTO_INSTALADOR_WINDOWS.md §7 (opcional). Repositórios privados têm cota mensal grátis de minutos.
+# Secret opcional GOOGLE_OAUTH_CLIENT_JSON: JSON do client OAuth "App para computador" (embutido no instalador).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Client OAuth do Google (opcional)
+        shell: pwsh
+        env:
+          GOOGLE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_OAUTH_CLIENT_JSON }}
+        run: |
+          if ($env:GOOGLE_OAUTH_CLIENT_JSON) {
+            New-Item -ItemType Directory -Force installer | Out-Null
+            Set-Content installer/google_oauth_client.json $env:GOOGLE_OAUTH_CLIENT_JSON -NoNewline
+          }
+
+      - name: Build
+        shell: pwsh
+        run: ./build.ps1
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/AiEditor-Setup-*.exe

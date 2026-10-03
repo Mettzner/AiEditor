@@ -9,3 +9,8 @@ node_modules/
 web/.env*.local
 client_secret*.json
 *.egg-info/
+
+# empacotamento (build.ps1)
+build/
+dist/
+installer/google_oauth_client.json

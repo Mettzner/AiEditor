@@ -1,7 +1,7 @@
 [project]
 name = "aieditor-server"
-version = "0.1.0"
-description = "AiEditor: roteiro + narração → vídeo montado e renderizado"
+version = "1.0.0"
+description = "AiEditor: roteiro + narraÃ§Ã£o â†’ vÃ­deo montado e renderizado"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
@@ -21,10 +21,14 @@ dependencies = [
     "tzdata>=2024.1",
     "yt-dlp>=2025.1",
     "lingua-language-detector>=2.0",
+    "platformdirs>=4.2",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# app de desktop (janela prÃ³pria + bandeja) e empacotamento do instalador (build.ps1)
+desktop = ["pywebview>=5", "pystray>=0.19"]
+build = ["pyinstaller>=6.10"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -37,4 +41,4 @@ include = ["app*"]
 "app.directions" = ["*/*.json", "*/*.md", "*/*.png", "*/*.svg"]
 
 [tool.pytest.ini_options]
-markers = ["live: testes com IA real (gastam centavos); rodam só com AIEDITOR_LIVE=1"]
+markers = ["live: testes com IA real (gastam centavos); rodam sÃ³ com AIEDITOR_LIVE=1"]

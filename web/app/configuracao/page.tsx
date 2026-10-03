@@ -10,7 +10,8 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Field, SimpleSelect } from "@/components/fields";
-import { api, type Price, type SettingsPayload, type Track, type YoutubeQuota } from "@/lib/api";
+import { ModelDownloadPanel } from "@/components/model-download";
+import { api, type AppInfo, type Price, type SettingsPayload, type Track, type YoutubeQuota } from "@/lib/api";
 
 const KEYS: { id: string; label: string; test?: string; note?: string }[] = [
   { id: "darkvi", label: "Darkvi (TTS + imagens)", test: "darkvi" },
@@ -46,6 +47,7 @@ export default function ConfiguracaoPage() {
   const [prices, setPrices] = useState<Price[]>([]);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [ytQuota, setYtQuota] = useState<YoutubeQuota | null>(null);
+  const [info, setInfo] = useState<AppInfo | null>(null);
 
   async function load() {
     try {
@@ -55,6 +57,7 @@ export default function ConfiguracaoPage() {
       setPrices(await api.prices());
       setTracks(await api.tracks());
       setYtQuota(await api.youtubeQuota());
+      setInfo(await api.appInfo());
     } catch (e) {
       toast.error(`Backend indisponível: ${(e as Error).message}`);
     }
@@ -101,8 +104,8 @@ export default function ConfiguracaoPage() {
 
   async function connectGoogle() {
     try {
-      const { url } = await api.googleStart();
-      window.open(url, "_blank");
+      const { url, opened } = await api.googleStart();
+      if (!opened) window.open(url, "_blank"); // no app de desktop o backend já abriu o navegador padrão
     } catch (e) {
       toast.error((e as Error).message);
     }
@@ -184,8 +187,9 @@ export default function ConfiguracaoPage() {
         <CardHeader>
           <CardTitle>Google Drive</CardTitle>
           <CardDescription>
-            Crie um client OAuth no Google Cloud Console com o redirect{" "}
-            <code className="text-xs">http://localhost:8000/auth/google/callback</code>, cole o JSON abaixo e conecte.
+            {data.google_client_embedded
+              ? "Esta instalação já traz o client OAuth do AiEditor: basta conectar com a sua conta Google."
+              : "Crie um client OAuth do tipo “App para computador” no Google Cloud Console, cole o JSON abaixo e conecte."}
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
@@ -411,7 +415,10 @@ export default function ConfiguracaoPage() {
       <Card>
         <CardHeader>
           <CardTitle>Render</CardTitle>
-          <CardDescription>Qualidade usa a CPU (libx264). Rápido usa a RX 580 (h264_amf).</CardDescription>
+          <CardDescription>
+            Qualidade usa a CPU (libx264). Rápido usa a placa de vídeo AMD (h264_amf) e só aparece quando ela funciona
+            neste PC.
+          </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2">
           <Field label="Modo">
@@ -420,7 +427,9 @@ export default function ConfiguracaoPage() {
               onChange={(v) => patch(["render", "mode"], v)}
               options={[
                 { value: "quality", label: "Qualidade (CPU / x264)" },
-                { value: "fast", label: "Rápido (GPU / AMF)" },
+                ...(info?.ffmpeg.amf || s.render.mode === "fast"
+                  ? [{ value: "fast", label: info?.ffmpeg.amf ? "Rápido (GPU / AMF)" : "Rápido (AMF indisponível neste PC)" }]
+                  : []),
               ]}
             />
           </Field>
@@ -453,12 +462,12 @@ export default function ConfiguracaoPage() {
               onChange={(e) => patch(["ffmpeg_dir"], e.target.value || null)}
             />
           </Field>
-          <Field label="Modelo do whisper" hint="small é rápido; medium é mais preciso e ~2× mais lento.">
-            <SimpleSelect
-              value={s.transcription.model}
-              onChange={(v) => patch(["transcription", "model"], v)}
-              options={["base", "small", "medium", "large-v3"].map((m) => ({ value: m, label: m }))}
-            />
+          <Field
+            label="Modelo de transcrição (whisper)"
+            hint={`Em uso: ${s.transcription.model}. small é rápido; medium é mais preciso e ~2× mais lento.`}
+            className="sm:col-span-2"
+          >
+            <ModelDownloadPanel current={s.transcription.model} onReady={(m) => patch(["transcription", "model"], m)} />
           </Field>
           <div className="flex flex-col gap-1.5 sm:col-span-2">
             <div>

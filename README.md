@@ -36,6 +36,28 @@ cd web;    npm run dev
 Primeiros passos: **Configuração** (chaves Darkvi, Anthropic, Pexels/Pixabay; testar FFmpeg) → **Canais**
 (criar um canal com voz TTS) → **Criação**.
 
+A API fica sob `/api` (ex.: `http://localhost:8000/api/health`); o `next dev` chama `http://localhost:8000/api`.
+
+## Instalador para Windows
+
+Um comando gera `dist\AiEditor-Setup-<versão>.exe` (PyInstaller + pywebview + Inno Setup, tudo gratuito):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -EmbedGoogleClientFromKeyring
+```
+
+Nova versão: altere `VERSION` (ex.: `1.0.1`), rode o `build.ps1`, publique o setup e atualize o `latest.json`
+(o app instalado avisa quando há versão nova). Detalhes: [EMPACOTAMENTO](installer/COMO_INSTALAR.md) para quem
+instala; `aieditor.spec` e `installer\aieditor.iss` para o build. O app instalado guarda os dados em
+`%LOCALAPPDATA%\AiEditor`; o modo de desenvolvimento continua usando `data\`.
+
+Rodar o app de desktop a partir do código (janela própria + bandeja), sem empacotar:
+
+```powershell
+cd web; npm run build; cd ..\server
+$env:AIEDITOR_SERVE_WEB = "1"; .venv\Scripts\python -m app.launcher
+```
+
 ## Testes
 
 ```powershell

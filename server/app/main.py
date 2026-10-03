@@ -24,7 +24,8 @@ class SpaStaticFiles(StaticFiles):
         try:
             return await super().get_response(path, scope)
         except StarletteHTTPException as e:
-            if e.status_code != 404 or path.startswith("api/") or "." in path.rsplit("/", 1)[-1]:
+            norm = path.replace("\\", "/")  # no Windows o Starlette entrega o caminho com barras invertidas
+            if e.status_code != 404 or norm.startswith("api/") or "." in norm.rsplit("/", 1)[-1]:
                 raise
             return await super().get_response("index.html", scope)
 

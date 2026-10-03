@@ -22,7 +22,7 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-log = logging.getLogger("aieditor.launcher")
+log = logging.getLogger("launcher")
 
 MUTEX_NAME = "Local\\AiEditor.SingleInstance"
 ERROR_ALREADY_EXISTS = 183
@@ -61,6 +61,19 @@ def setup_logging(name: str) -> Path:
         root.addHandler(logging.StreamHandler())
     root.setLevel(logging.INFO)
     return path
+
+
+def split_server_log() -> None:
+    """Na janela, servidor e launcher dividem o processo: o servidor (uvicorn + app) vai para server.log."""
+    from .paths import logs_dir
+
+    handler = RotatingFileHandler(logs_dir() / "server.log", maxBytes=5 * 1024 * 1024, backupCount=3,
+                                  encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    for name in ("uvicorn", "aieditor", "httpx", "fastapi"):
+        lg = logging.getLogger(name)
+        lg.handlers[:] = [handler]
+        lg.propagate = False
 
 
 def message_box(text: str, title: str = "AiEditor", flags: int = MB_OK) -> int:
@@ -249,6 +262,7 @@ _mutex = None
 def run_gui() -> None:
     os.environ["AIEDITOR_DESKTOP"] = "1"
     log_path = setup_logging("launcher")
+    split_server_log()
     from . import desktop, paths
 
     if _already_running():
