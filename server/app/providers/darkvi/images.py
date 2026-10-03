@@ -55,8 +55,27 @@ def upload_reference(path: Path) -> str:
     return key
 
 
-def generate(prompt: str, dest: Path, reference_key: str | None = None, poll_seconds: float = 4,
+class BrokenImageUrl(DarkviError):
+    """A Darkvi às vezes junta vários arquivos numa URL só ("a.jpg,b.jpg") e assina o nome inexistente: 404."""
+
+
+def _broken_url(url: str) -> bool:
+    from urllib.parse import unquote, urlparse
+
+    return "," in unquote(urlparse(url).path)
+
+
+def generate(prompt: str, dest: Path, reference_key: str | None = None, poll_seconds: float = 3,
              timeout_seconds: float = 600) -> Path:
+    """Gera e baixa. Se a URL vier quebrada ou o download falhar, pede a imagem de novo 1 vez."""
+    try:
+        return _generate_once(prompt, dest, reference_key, poll_seconds, timeout_seconds)
+    except BrokenImageUrl:
+        return _generate_once(prompt, dest, reference_key, poll_seconds, timeout_seconds)
+
+
+def _generate_once(prompt: str, dest: Path, reference_key: str | None, poll_seconds: float,
+                   timeout_seconds: float) -> Path:
     IMAGE_BUCKET.acquire()
     payload = {"prompt": prompt[:PROMPT_LIMIT], "aspect": "16:9"}
     if reference_key:
@@ -74,6 +93,7 @@ def generate(prompt: str, dest: Path, reference_key: str | None = None, poll_sec
     if not image_id:
         raise DarkviError(f"POST /v1/images sem id: {created!r}"[:300])
     deadline = time.monotonic() + timeout_seconds
+    time.sleep(poll_seconds)  # a geração nunca fica pronta antes de ~3 s
     while True:
         body = call("GET", f"/v1/images/{image_id}")
         status = str(_pick(body, "status", "state") or "").upper()
@@ -87,4 +107,9 @@ def generate(prompt: str, dest: Path, reference_key: str | None = None, poll_sec
     url = _pick(body, "url", "imageUrl", "signedUrl")
     if not url:
         raise DarkviError(f"Imagem {image_id} sem URL: {body!r}"[:300])
-    return download(url, dest)  # URL assinada vale 7 dias: baixa na hora
+    if _broken_url(url):
+        raise BrokenImageUrl(f"Imagem {image_id}: a Darkvi devolveu vários arquivos numa URL só (link inválido)")
+    try:
+        return download(url, dest)  # URL assinada vale 7 dias: baixa na hora
+    except Exception as e:  # noqa: BLE001 — 404/403 ou rede: tratado como falha da Darkvi
+        raise BrokenImageUrl(f"Imagem {image_id}: download falhou ({e})"[:300]) from e

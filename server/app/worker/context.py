@@ -103,6 +103,37 @@ class JobContext:
                 s.add(p)
             s.commit()
 
+    def record_llm(self, usage, step: str | None = None) -> None:
+        """Registra uma chamada de IA paga (Claude, Gemini) em llm_usage.json e soma o custo na produção."""
+        entry = usage.to_dict() if hasattr(usage, "to_dict") else dict(usage)
+        entry["step"] = step or self._step
+        with self._lock:
+            path = self.path("llm_usage.json")
+            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"calls": []}
+            data["calls"].append(entry)
+            calls = data["calls"]
+            by_task: dict[str, dict] = {}
+            for c in calls:
+                t = by_task.setdefault(c.get("task") or c.get("step") or "?", {"calls": 0, "cost": 0.0, "tokens": 0})
+                t["calls"] += 1
+                t["cost"] = round(t["cost"] + (c.get("cost") or 0), 6)
+                t["tokens"] += sum(c.get(k) or 0 for k in ("input_tokens", "output_tokens",
+                                                           "cache_creation_input_tokens", "cache_read_input_tokens"))
+            data["summary"] = {
+                "calls": len(calls), "cost": round(sum(c.get("cost") or 0 for c in calls), 6),
+                "input_tokens": sum(c.get("input_tokens") or 0 for c in calls),
+                "output_tokens": sum(c.get("output_tokens") or 0 for c in calls),
+                "cache_read_input_tokens": sum(c.get("cache_read_input_tokens") or 0 for c in calls),
+                "cache_creation_input_tokens": sum(c.get("cache_creation_input_tokens") or 0 for c in calls),
+                "local_cache_hits": sum(1 for c in calls if c.get("local_cache")),
+                "by_task": by_task,
+                "top_task": max(by_task, key=lambda k: by_task[k]["cost"]) if by_task else None,
+            }
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(path)
+        self.add_cost(entry.get("cost") or 0)
+
     def add_cost(self, amount: float) -> None:
         if amount <= 0:
             return

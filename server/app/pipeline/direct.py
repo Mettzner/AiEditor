@@ -5,6 +5,50 @@ from ..directions import get_direction
 from ..providers.music import library
 from ..worker.context import JobContext
 from .allocate import YOUTUBE_IMPLEMENTED, composition, targets
+from .context import grade_for
+from .report import write_report, write_visual_report
+
+
+def fix_overlay_language(ctx: JobContext, overlays: list[dict], scenes: list[dict]) -> list[dict]:
+    """Nenhum texto na tela em idioma diferente do vídeo (§11.4): todos os textos errados são corrigidos numa
+    única chamada barata (Haiku); o que continuar errado é descartado."""
+    from ..lang import is_mismatch, name
+    from ..providers.llm.base import call_llm
+    from .visual import OVERLAY_FIX_SYSTEM, OverlayFixBatch, compact_json
+
+    lang = ctx.config.lang
+    for o in overlays:
+        o["language"] = lang
+    wrong = [i for i, o in enumerate(overlays) if is_mismatch(o["text"], lang)]
+    if not wrong:
+        return overlays
+    payload = {"target_language": f"{name(lang)} ({lang})", "texts": [
+        {"index": i, "text": overlays[i]["text"], "type": overlays[i]["type"],
+         "narration": next((s["text"] for s in scenes if s["start"] <= overlays[i]["start"] < s["end"]), "")}
+        for i in wrong]}
+    fixed: dict[int, str] = {}
+    err = None
+    try:
+        out, usage = call_llm("overlay", system=OVERLAY_FIX_SYSTEM, user=compact_json(payload), schema=OverlayFixBatch,
+                              max_tokens=60 + 40 * len(wrong))
+        ctx.record_llm(usage, step="direct")
+        fixed = {it.index: it.text.strip()[:60] for it in out.items}
+    except Exception as e:  # noqa: BLE001
+        err = repr(e)
+    kept = []
+    for i, o in enumerate(overlays):
+        if i not in wrong:
+            kept.append(o)
+            continue
+        new = fixed.get(i)
+        if new and not is_mismatch(new, lang):
+            ctx.issue("OVERLAY_LANGUAGE_FIXED", f"Overlay \"{o['text']}\" corrigido para \"{new}\" ({lang})")
+            kept.append({**o, "text": new, "original_text": o["text"]})
+        else:
+            ctx.issue("OVERLAY_LANGUAGE_FIXED", f"Overlay \"{o['text']}\" removido: não foi possível deixá-lo em "
+                      f"{lang}", severity="warning", detail=err)
+    return kept
+
 
 FPS = 30
 
@@ -50,10 +94,13 @@ def run(ctx: JobContext) -> str:
     last_overlay = -1e9
     min_gap = params.get("overlay_min_gap_seconds", 20)
     xfade = params.get("crossfade_seconds", 0.3)
+    cfg = ctx.config
+    prev_ctx: str | None = None
     for n, s in enumerate(merged):
         e = s["entry"]
         start, end = _q(s["start"]), _q(s["end"])
-        is_image = e["source"].startswith("ai_image")
+        is_image = bool(e.get("is_image")) or e["source"].startswith("ai_image")
+        context = s.get("context") or {}
         scene = {
             "id": s["id"], "start": start, "end": end, "source": e["source"], "asset": e["asset"],
             "in": e.get("in", 0.0), "motion": None,
@@ -63,19 +110,40 @@ def run(ctx: JobContext) -> str:
         if is_image:
             a, b = KENBURNS[n % len(KENBURNS)]
             scene["motion"] = {"type": "kenburns", "from": a, "to": b}
+        # gradação uniforme por bloco histórico: costura reconstituição, pintura e IA numa mesma atmosfera (§8)
+        grade = grade_for(context.get("footage_feasibility"), cfg.period_look) if cfg.period_grade else None
+        if grade:
+            scene["grade"] = grade
         scenes.append(scene)
 
-        if s.get("chapter_break") and s.get("chapter_title") and n > 0:
+        chapter = bool(s.get("chapter_break") and s.get("chapter_title") and n > 0)
+        if chapter:
             dur = params.get("chapter_title_seconds", 3.0)
             overlays.append({"type": "chapter", "start": _q(start + xfade), "end": _q(min(end, start + xfade + dur)),
                              "text": s["chapter_title"], "style": f"{direction.id}.chapter"})
             last_overlay = start
-        elif s.get("highlight") and start - last_overlay >= min_gap:
+        # card de lugar e data ao entrar num bloco de contexto (no 1º bloco, só se for histórico)
+        ctx_id = context.get("id")
+        entering = ctx_id and ctx_id != prev_ctx and (n > 0 or context.get("setting_type") == "historical")
+        prev_ctx = ctx_id or prev_ctx
+        if cfg.context_cards and entering and (context.get("card_text") or "").strip():
+            c_start = _q(start + (xfade + params.get("chapter_title_seconds", 3.0) + 0.2 if chapter else 0.5))
+            c_end = _q(min(end - 0.1, c_start + params.get("context_card_seconds", 3.5)))
+            if c_end - c_start >= 1.5:
+                overlays.append({"type": "place_card", "start": c_start, "end": c_end,
+                                 "text": context["card_text"].strip(), "style": f"{direction.id}.place_card"})
+                last_overlay = start
+                continue
+        if chapter:
+            continue
+        if s.get("highlight") and start - last_overlay >= min_gap:
             dur = params.get("overlay_duration_seconds", 3.5)
             o_start = _q(start + 0.4)
             overlays.append({"type": "highlight", "start": o_start, "end": _q(min(end - 0.1, o_start + dur)),
                              "text": s["highlight"], "style": f"{direction.id}.highlight"})
             last_overlay = start
+
+    overlays = fix_overlay_language(ctx, overlays, merged)
 
     # Desvio de composição (tolerância de 5 p.p. por fonte)
     for s in plan["scenes"]:
@@ -111,4 +179,7 @@ def run(ctx: JobContext) -> str:
                   "color_accent": ctx.config.color_accent, "subtitle": ctx.config.subtitle_style.model_dump()},
         "direction": direction.id,
     }
-    return str(ctx.write_json("timeline.json", timeline))
+    out = ctx.write_json("timeline.json", timeline)
+    write_report(ctx)
+    write_visual_report(ctx)
+    return str(out)

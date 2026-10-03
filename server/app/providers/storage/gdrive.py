@@ -15,7 +15,9 @@ from googleapiclient.http import MediaFileUpload
 from ...config import get_secret, set_secret
 
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
-REDIRECT_URI = "http://localhost:8000/auth/google/callback"
+# Client do tipo "App para computador": o Google aceita redirect de loopback em qualquer porta, então o endereço
+# segue a porta em que o app está rodando (8000 no desenvolvimento, porta livre no app instalado).
+CALLBACK_PATH = "api/auth/google/callback"
 FOLDER_MIME = "application/vnd.google-apps.folder"
 
 _pending_flows: dict[str, Flow] = {}
@@ -25,15 +27,29 @@ class DriveNotConfigured(RuntimeError):
     pass
 
 
+def _embedded_client() -> str | None:
+    """Client OAuth "App para computador" do projeto AiEditor embutido no instalador (§4). No fluxo para apps
+    instalados o Google não trata o client_secret como segredo; cada usuário entra com a própria conta."""
+    from ... import paths
+
+    f = paths.resource_dir() / "resources" / "google_oauth_client.json"
+    return f.read_text(encoding="utf-8") if f.exists() else None
+
+
 def _client_config() -> dict:
-    raw = get_secret("google_oauth_client")
+    raw = get_secret("google_oauth_client") or _embedded_client()
     if not raw:
         raise DriveNotConfigured("Cole o JSON do client OAuth do Google na Configuração")
     return json.loads(raw)
 
 
-def start_auth() -> str:
-    flow = Flow.from_client_config(_client_config(), scopes=SCOPES, redirect_uri=REDIRECT_URI)
+def client_available() -> bool:
+    return bool(get_secret("google_oauth_client") or _embedded_client())
+
+
+def start_auth(base_url: str = "http://localhost:8000/") -> str:
+    redirect_uri = base_url.rstrip("/") + "/" + CALLBACK_PATH
+    flow = Flow.from_client_config(_client_config(), scopes=SCOPES, redirect_uri=redirect_uri)
     url, state = flow.authorization_url(access_type="offline", prompt="consent", include_granted_scopes="true")
     _pending_flows[state] = flow
     return url
@@ -63,7 +79,7 @@ def _credentials() -> Credentials:
 
 
 def is_connected() -> bool:
-    return bool(get_secret("google_refresh_token") and get_secret("google_oauth_client"))
+    return bool(get_secret("google_refresh_token") and client_available())
 
 
 def _service():

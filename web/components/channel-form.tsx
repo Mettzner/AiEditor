@@ -1,21 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Play, Save, Trash2, Upload } from "lucide-react";
+import { useState } from "react";
+import { Save, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
-import { Field, SimpleSelect, SplitSlider } from "@/components/fields";
-import { api, DEFAULT_PRESET, type Channel, type Direction, type Preset, type Voice } from "@/lib/api";
-
-const LANGS = [
-  { value: "en", label: "Inglês" },
-  { value: "pt", label: "Português" },
-  { value: "es", label: "Espanhol" },
-];
+import { Field, SimpleSelect } from "@/components/fields";
+import { VoicePicker } from "@/components/voice-picker";
+import { api, DEFAULT_PRESET, type Channel, type Preset } from "@/lib/api";
 
 export const AI_MEDIA = [
   { value: "both", label: "Vídeos e imagens" },
@@ -23,38 +17,40 @@ export const AI_MEDIA = [
   { value: "image", label: "Só imagens" },
 ];
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+export const LANGS = [
+  { value: "en", label: "Inglês" },
+  { value: "pt", label: "Português" },
+  { value: "es", label: "Espanhol" },
+];
+
+function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
     <section className="flex flex-col gap-4">
-      <h3 className="text-sm font-medium text-muted-foreground">{title}</h3>
+      <div>
+        <h3 className="text-sm font-medium text-muted-foreground">{title}</h3>
+        {hint && <p className="text-xs text-muted-foreground/80">{hint}</p>}
+      </div>
       {children}
     </section>
   );
 }
 
+/**
+ * Identidade fixa do canal. Direção, idiomas, estilo visual, composição e ritmo são escolhidos na
+ * Criação de cada vídeo (e podem ser salvos como padrão do canal no último passo).
+ */
 export function ChannelForm({
   channel,
-  directions,
   onSaved,
   onDeleted,
 }: {
   channel: Channel | null;
-  directions: Direction[];
   onSaved: (c: Channel) => void;
   onDeleted: () => void;
 }) {
   const [name, setName] = useState(channel?.name ?? "");
   const [preset, setPreset] = useState<Preset>(channel?.preset ?? DEFAULT_PRESET);
-  const [voices, setVoices] = useState<Voice[] | null>(null);
-  const [voiceError, setVoiceError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    api
-      .voices()
-      .then(setVoices)
-      .catch((e) => setVoiceError((e as Error).message));
-  }, []);
 
   const set = <K extends keyof Preset>(k: K, v: Preset[K]) => setPreset((p) => ({ ...p, [k]: v }));
 
@@ -94,75 +90,19 @@ export function ChannelForm({
     }
   }
 
-  const voice = voices?.find((v) => v.id === preset.tts_voice);
-
   return (
     <div className="flex flex-col gap-7">
-      <Section title="Identidade">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Nome do canal">
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="The Fourth Encounter" />
-          </Field>
-          <Field label="Direção padrão">
-            <SimpleSelect
-              value={preset.direction}
-              onChange={(v) => set("direction", v)}
-              options={directions.map((d) => ({ value: d.id, label: d.name }))}
-            />
-          </Field>
-          <Field label="Idioma do roteiro / narração">
-            <SimpleSelect value={preset.language} onChange={(v) => set("language", v)} options={LANGS} />
-          </Field>
-          <Field label="Idioma das buscas">
-            <SimpleSelect value={preset.search_language} onChange={(v) => set("search_language", v)} options={LANGS} />
-          </Field>
-        </div>
-        <Field
-          label="Estilo visual"
-          hint="Texto livre, injetado nos prompts de busca, geração e ranqueamento."
-        >
-          <Textarea
-            value={preset.visual_style}
-            onChange={(e) => set("visual_style", e.target.value)}
-            placeholder="noturno, granulado, tons frios"
-            rows={2}
-          />
-        </Field>
-      </Section>
+      <Field label="Nome do canal">
+        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="The Fourth Encounter" />
+      </Field>
 
       <Separator />
       <Section title="Narração">
-        <Field
-          label="Voz TTS (Darkvi)"
-          hint={voiceError ? `Não foi possível carregar as vozes: ${voiceError}. Digite o id da voz.` : undefined}
-        >
-          {voices && voices.length > 0 ? (
-            <div className="flex gap-2">
-              <SimpleSelect
-                value={preset.tts_voice}
-                onChange={(v) => set("tts_voice", v)}
-                options={voices.map((v) => ({
-                  value: v.id,
-                  label: [v.name, v.language, v.accent].filter(Boolean).join(" · "),
-                }))}
-              />
-              <Button
-                variant="outline"
-                size="icon"
-                aria-label="Ouvir prévia"
-                disabled={!voice?.preview_url}
-                onClick={() => voice?.preview_url && new Audio(voice.preview_url).play()}
-              >
-                <Play />
-              </Button>
-            </div>
-          ) : (
-            <Input
-              value={preset.tts_voice ?? ""}
-              onChange={(e) => set("tts_voice", e.target.value || null)}
-              placeholder="id da voz"
-            />
-          )}
+        <Field label="Narrador padrão" hint="Pode ser trocado na Criação de cada vídeo.">
+          <VoicePicker
+            value={preset.tts_voice}
+            onChange={(v) => setPreset((p) => ({ ...p, tts_voice: v?.id ?? null, tts_voice_name: v?.name ?? null }))}
+          />
         </Field>
         <Field
           label="Imagem de referência de estilo (opcional)"
@@ -183,36 +123,6 @@ export function ChannelForm({
             </span>
           </div>
         </Field>
-      </Section>
-
-      <Separator />
-      <Section title="Composição e ritmo">
-        <SplitSlider left="Real" right="IA" value={preset.real_pct} onChange={(v) => set("real_pct", v)} />
-        <SplitSlider
-          left="YouTube"
-          right="Bancos"
-          value={preset.youtube_pct}
-          onChange={(v) => set("youtube_pct", v)}
-        />
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Tipo de mídia de IA">
-            <SimpleSelect
-              value={preset.ai_media}
-              onChange={(v) => set("ai_media", v as Preset["ai_media"])}
-              options={AI_MEDIA}
-            />
-          </Field>
-          <Field label="Duração média por cena (s)">
-            <Input
-              type="number"
-              min={2}
-              max={20}
-              step={0.5}
-              value={preset.avg_scene_seconds}
-              onChange={(e) => set("avg_scene_seconds", Number(e.target.value))}
-            />
-          </Field>
-        </div>
       </Section>
 
       <Separator />

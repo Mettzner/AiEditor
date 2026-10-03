@@ -26,7 +26,7 @@ def script_words(script: str) -> list[str]:
     return [w for w in script.split() if norm(w)]
 
 
-def _whisper(ctx: JobContext, wav) -> tuple[list[dict], float]:
+def _whisper(ctx: JobContext, wav, language: str | None) -> tuple[list[dict], float, str]:
     import numpy as np
     from faster_whisper import WhisperModel
 
@@ -35,10 +35,12 @@ def _whisper(ctx: JobContext, wav) -> tuple[list[dict], float]:
     with _model_lock:
         if key not in _models:
             ctx.progress(0.05, f"Carregando modelo whisper '{cfg['model']}'")
-            _models[key] = WhisperModel(cfg["model"], device="cpu", compute_type=cfg["compute_type"])
+            from ..whisper_models import model_source
+
+            _models[key] = WhisperModel(model_source(cfg["model"]), device="cpu", compute_type=cfg["compute_type"])
         model = _models[key]
     audio = np.frombuffer(ffmpeg.decode_mono_f32(wav), dtype=np.float32)
-    segments, info = model.transcribe(audio, language=ctx.config.language or None, word_timestamps=True,  # type: ignore[attr-defined]
+    segments, info = model.transcribe(audio, language=language, word_timestamps=True,  # type: ignore[attr-defined]
                                       vad_filter=True, beam_size=5)
     words = []
     for seg in segments:
@@ -47,7 +49,7 @@ def _whisper(ctx: JobContext, wav) -> tuple[list[dict], float]:
         for w in seg.words or []:
             if norm(w.word):
                 words.append({"text": w.word.strip(), "start": float(w.start), "end": float(w.end)})
-    return words, float(info.duration)
+    return words, float(info.duration), info.language
 
 
 def _from_srt(path) -> list[dict]:
@@ -106,8 +108,10 @@ def run(ctx: JobContext) -> str:
     audio_duration = ffmpeg.duration(wav)
     darkvi_srt = ctx.dir / "audio" / "darkvi.srt"
     source = "whisper"
+    detected = None
     try:
-        heard, _ = _whisper(ctx, wav)
+        heard, _, lang = _whisper(ctx, wav, ctx.config.lang or None)
+        detected = None if ctx.config.lang else lang  # com idioma forçado, o whisper só repete o configurado
     except Exception as e:  # noqa: BLE001
         if not darkvi_srt.exists():
             raise
@@ -116,6 +120,17 @@ def run(ctx: JobContext) -> str:
 
     words, divergence = align(ctx.script, heard, audio_duration)
     limit = ctx.settings["transcription"]["divergence_warn"]
+    if divergence > limit and source == "whisper" and ctx.config.lang:
+        # idioma configurado pode estar errado (ex.: roteiro em português com idioma "en"): detecta sozinho
+        ctx.progress(0.5, "Divergência alta; transcrevendo de novo com detecção de idioma")
+        heard2, _, detected2 = _whisper(ctx, wav, None)
+        words2, divergence2 = align(ctx.script, heard2, audio_duration)
+        if divergence2 < divergence:
+            ctx.issue("TRANSCRIPT_DIVERGENCE",
+                      f"O áudio parece estar em '{detected2}', mas a produção estava configurada em "
+                      f"'{ctx.config.lang}'. Transcrição refeita com detecção automática "
+                      f"(divergência {divergence:.0%} → {divergence2:.0%}).", severity="warning")
+            heard, words, divergence, detected = heard2, words2, divergence2, detected2
     if divergence > limit:
         ctx.issue("TRANSCRIPT_DIVERGENCE",
                   f"{divergence:.0%} das palavras do roteiro não foram reconhecidas no áudio (limite {limit:.0%})")
@@ -128,6 +143,6 @@ def run(ctx: JobContext) -> str:
 
     out = ctx.write_json("transcript.json", {
         "source": source, "audio_duration": audio_duration, "divergence": round(divergence, 4),
-        "srt_end_delta": cross, "words": words, "heard": heard,
+        "srt_end_delta": cross, "detected_language": detected, "words": words, "heard": heard,
     })
     return str(out)

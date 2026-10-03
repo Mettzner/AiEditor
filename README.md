@@ -36,6 +36,16 @@ cd web;    npm run dev
 Primeiros passos: **Configuração** (chaves Darkvi, Anthropic, Pexels/Pixabay; testar FFmpeg) → **Canais**
 (criar um canal com voz TTS) → **Criação**.
 
+## Testes
+
+```powershell
+cd server
+.venv\Scripts\python -m pip install -e .[dev]
+.venv\Scripts\python -m pytest tests -q
+```
+
+Os testes usam banco temporário e provedores simulados (sem rede e sem gastar cota).
+
 ## Arquitetura
 
 - `web/`: Next.js + Tailwind + shadcn (Base UI). Fala com a API por REST e acompanha produções por SSE.
@@ -57,9 +67,10 @@ Artefatos de cada produção em `data/jobs/<id>/`: `audio/narration.wav`, `trans
 | TTS Darkvi, upload de áudio, loudnorm | pronto (formatos de resposta da Darkvi a confirmar) |
 | Transcrição faster-whisper + alinhamento ao roteiro + fallback SRT | pronto |
 | Planejamento com Claude (saída estruturada) + fallback determinístico | pronto |
-| Pexels + Pixabay, filtro técnico + pré-ranking textual | pronto (funil de visão: Fase 2) |
+| Seleção econômica: cache 7 dias, filtro técnico, top 8 por texto, folha de miniaturas no Gemini (1–2 chamadas/cena) | pronto |
+| YouTube CC com cota (fuso do Pacífico, 403 reativo) e fallback YouTube → bancos → fotos | pronto |
 | Imagens IA via Darkvi com rate limiter 5/min e queda para bancos | pronto (adiantado da Fase 3) |
 | Direção Clássico com crossfade de capítulo, destaques e títulos | pronto (adiantado da Fase 4) |
 | Render x264 / AMF com fallback, legendas .ass, música da biblioteca com ducking | pronto |
 | Upload resumable para o Drive via OAuth | pronto (não testado sem conta) |
-| YouTube CC, vídeo de IA (fal.ai), ElevenLabs Music, funil de visão | próximas fases |
+| Vídeo de IA (fal.ai), ElevenLabs Music | próximas fases |

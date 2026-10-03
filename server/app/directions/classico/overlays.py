@@ -48,4 +48,20 @@ def chapter_title(text: str, style: dict, dest: Path) -> Path:
     return dest
 
 
-TEMPLATES = {"highlight": highlight, "chapter": chapter_title}
+def place_card(text: str, style: dict, dest: Path) -> Path:
+    """Card de lugar e data na troca de bloco de contexto ("Rural Ireland, 1850"): canto inferior esquerdo,
+    texto claro sobre um degradê escuro, com um filete na cor de destaque."""
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    for i in range(260):  # degradê de baixo para cima, só o suficiente para o texto ler sobre qualquer imagem
+        d.line((0, H - i, W, H - i), fill=(0, 0, 0, int(150 * (1 - i / 260) ** 1.6)))
+    font = ImageFont.truetype(find_font(style["font"]), 46)
+    l, t, r, b = d.textbbox((0, 0), text, font=font)
+    x, y = 110, H - 170
+    d.rectangle((x, y - 22, x + min(220, (r - l)), y - 16), fill=_hex(style["color_accent"]))
+    d.text((x - l, y - t), text, font=font, fill=_hex(style["color_primary"]))
+    img.save(dest)
+    return dest
+
+
+TEMPLATES = {"highlight": highlight, "chapter": chapter_title, "place_card": place_card}

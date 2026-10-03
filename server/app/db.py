@@ -26,7 +26,10 @@ def _sqlite_pragmas(dbapi_conn, _):  # API e worker são processos distintos →
 def init_db() -> None:
     from . import models  # noqa: F401  (registra as tabelas)
 
+    from .migrations import migrate
+
     SQLModel.metadata.create_all(engine)
+    migrate(engine)  # migrações versionadas (schema_version); nunca apagam dados
     models.seed_defaults()
 
 

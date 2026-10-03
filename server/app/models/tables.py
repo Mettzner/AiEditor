@@ -80,3 +80,41 @@ class ProviderPrice(SQLModel, table=True):
     unit: str  # ex.: "per_1m_input_tokens", "per_image", "per_second_video"
     price: float
     note: Optional[str] = None
+
+
+class SearchCache(SQLModel, table=True):
+    """Resultados de busca por provedor + query normalizada + quantidade (validade em settings)."""
+
+    key: str = Field(primary_key=True)
+    provider: str
+    query: str
+    results: list[Any] = Field(default_factory=list, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=now)
+
+
+class VisionCache(SQLModel, table=True):
+    """Notas da IA de visão: hash(etapa + candidatos + visual_intent + estilo + modelo)."""
+
+    key: str = Field(primary_key=True)
+    stage: str
+    result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=now)
+
+
+class YtQuota(SQLModel, table=True):
+    """Unidades da YouTube Data API gastas por dia (fuso America/Los_Angeles, quando a cota zera)."""
+
+    day: str = Field(primary_key=True)  # AAAA-MM-DD no horário do Pacífico
+    used: int = 0
+    exhausted: bool = False
+    updated_at: datetime = Field(default_factory=now)
+
+
+class LlmCache(SQLModel, table=True):
+    """Respostas do LLM: hash(etapa + modelo + versão do prompt + entrada). Retry não paga de novo."""
+
+    key: str = Field(primary_key=True)
+    task: str
+    model: str
+    result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=now)

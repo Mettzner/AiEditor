@@ -1,1 +1,1 @@
-"""YouTube Data API v3 (Creative Commons) + download de trecho com yt-dlp. Previsto para a Fase 3 (§7.3)."""
+"""YouTube Data API v3 (Creative Commons) com controle de cota + download de trecho com yt-dlp (§7.3)."""

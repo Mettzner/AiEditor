@@ -17,7 +17,14 @@ dependencies = [
     "google-api-python-client>=2.140",
     "google-auth-oauthlib>=1.2",
     "google-auth>=2.34",
+    "google-genai>=1.0",
+    "tzdata>=2024.1",
+    "yt-dlp>=2025.1",
+    "lingua-language-detector>=2.0",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -28,3 +35,6 @@ include = ["app*"]
 
 [tool.setuptools.package-data]
 "app.directions" = ["*/*.json", "*/*.md", "*/*.png", "*/*.svg"]
+
+[tool.pytest.ini_options]
+markers = ["live: testes com IA real (gastam centavos); rodam só com AIEDITOR_LIVE=1"]

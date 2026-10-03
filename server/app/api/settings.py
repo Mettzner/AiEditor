@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from .. import desktop
 from ..config import SECRET_PROVIDERS, get_secret, load_settings, save_settings, set_secret
 from ..db import get_session
 from ..directions import image_path, list_directions
@@ -15,7 +16,10 @@ from ..models import ProviderPrice
 from ..pipeline.render import ffmpeg
 from ..providers.darkvi import client as darkvi_client
 from ..providers.darkvi import tts as darkvi_tts
+from ..providers.llm import gemini
 from ..providers.llm.anthropic import AnthropicLLM
+from ..providers.youtube import client as youtube
+from ..providers.youtube import quota as yt_quota
 from ..providers.music import library
 from ..providers.storage import gdrive
 from ..providers.stock import REGISTRY
@@ -35,7 +39,8 @@ def _secrets_status() -> dict[str, bool]:
 
 @router.get("/settings")
 def get_settings():
-    return {"settings": load_settings(), "secrets": _secrets_status(), "google_connected": gdrive.is_connected()}
+    return {"settings": load_settings(), "secrets": _secrets_status(), "google_connected": gdrive.is_connected(),
+            "google_client_embedded": gdrive.client_available() and not get_secret("google_oauth_client")}
 
 
 @router.put("/settings")
@@ -65,9 +70,15 @@ def test_provider(provider: str):
             return AnthropicLLM().test()
         if provider == "google":
             return gdrive.test()
+        if provider == "youtube":
+            return youtube.test()
+        if provider == "gemini":
+            return gemini.test()
         if provider == "ffmpeg":
             enc = ffmpeg.encoders()
-            return {"ok": True, "detail": {"libx264": "libx264" in enc, "h264_amf": "h264_amf" in enc,
+            # h264_amf: listado E funcionando neste PC (codifica quadros de teste)
+            return {"ok": True, "detail": {"libx264": "libx264" in enc,
+                                           "h264_amf": "h264_amf" in enc and ffmpeg.amf_available(),
                                            "path": ffmpeg.ffmpeg_bin()}}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "detail": str(e)}
@@ -139,11 +150,14 @@ def update_tracks(body: list[TrackIn]):
 
 
 @router.get("/auth/google/start")
-def google_start():
+def google_start(request: Request):
+    """No app de desktop, o login abre no navegador padrão (o Google recusa OAuth dentro de WebView)."""
     try:
-        return {"url": gdrive.start_auth()}
+        url = gdrive.start_auth(str(request.base_url))
     except gdrive.DriveNotConfigured as e:
         raise HTTPException(400, str(e)) from e
+    opened = desktop.is_desktop() and desktop.open_external(url)
+    return {"url": url, "opened": opened}
 
 
 @router.get("/auth/google/callback", response_class=HTMLResponse)
@@ -156,6 +170,8 @@ def google_callback(state: str, code: str):
     return f"<html><body style='font-family:sans-serif;padding:40px'><h2>{msg}</h2></body></html>"
 
 
-@router.get("/health")
-def health():
-    return {"ok": True, "ffmpeg": ffmpeg.available()}
+@router.get("/youtube/quota")
+def youtube_quota():
+    return yt_quota.status()
+
+

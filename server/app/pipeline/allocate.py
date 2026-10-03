@@ -4,8 +4,7 @@ from __future__ import annotations
 from ..config import load_settings
 from ..models import ProductionConfig
 
-# Fase 1: ainda sem adapter do YouTube; as cenas alocadas a ele migram para os bancos.
-YOUTUBE_IMPLEMENTED = False
+YOUTUBE_IMPLEMENTED = True
 
 
 def targets(total: float, config: ProductionConfig) -> dict[str, float]:
@@ -46,6 +45,6 @@ def composition(scenes: list[dict]) -> dict[str, float]:
     out = {"stock": 0.0, "youtube": 0.0, "ai": 0.0}
     for s in scenes:
         src = s.get("final_source") or s["source"]
-        key = "ai" if src.startswith("ai") else src
+        key = "ai" if src.startswith("ai") else ("stock" if src == "stock_photo" else src)
         out[key] = out.get(key, 0.0) + (s["end"] - s["start"])
     return out

@@ -9,8 +9,10 @@ import httpx
 
 RETRY_STATUS = {408, 425, 500, 502, 503, 504}
 
+# Cliente único com keep-alive, compartilhado por todas as cenas paralelas
 _client = httpx.Client(timeout=httpx.Timeout(60.0, connect=15.0), follow_redirects=True,
-                       headers={"User-Agent": "AiEditor/0.1"})
+                       headers={"User-Agent": "AiEditor/0.1"},
+                       limits=httpx.Limits(max_connections=20, max_keepalive_connections=20))
 
 
 class ProviderError(RuntimeError):

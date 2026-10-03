@@ -1,8 +1,7 @@
 """Cliente base da Darkvi (https://darkvi.com/api).
 
-ATENÇÃO: os formatos de resposta abaixo foram inferidos da especificação (§6.1/§8.1).
-`_pick` procura o campo em `body`, `body.data` e `body.result` para tolerar variações;
-confirme os nomes reais com a documentação e ajuste se necessário.
+Formatos do TTS confirmados em produção; os de imagens (/v1/images) ainda são inferidos do §8.1,
+por isso `_pick` procura as chaves em profundidade.
 """
 from __future__ import annotations
 
@@ -31,14 +30,21 @@ def _token() -> str:
     return token
 
 
-def _pick(body: Any, *keys: str) -> Any:
-    if not isinstance(body, dict):
-        return None
-    for container in (body, body.get("data"), body.get("result")):
-        if isinstance(container, dict):
+def _pick(body: Any, *keys: str, max_depth: int = 3) -> Any:
+    """Procura a primeira chave em largura: topo, depois data/result, depois data.created etc.
+
+    Formatos confirmados: POST /tts → {ok, message, data: {created: {id, ...}}};
+    GET /tts/:id → {id, status: "DONE", ...} no topo.
+    """
+    level = [body] if isinstance(body, dict) else []
+    for _ in range(max_depth + 1):
+        for container in level:
             for k in keys:
                 if container.get(k) is not None:
                     return container[k]
+        level = [v for c in level for v in c.values() if isinstance(v, dict)]
+        if not level:
+            break
     return None
 
 
@@ -53,8 +59,16 @@ def call(method: str, path: str, *, json: Any = None, files: Any = None, data: A
     try:
         return json_or_raise(resp, f"Darkvi {path}")
     except ProviderError as e:
-        code = _pick(e.body, "code", "error") if isinstance(e.body, dict) else None
-        msg = AUTH_ERRORS.get(str(code), f"Darkvi {path}: HTTP {e.status} {e.body!r}"[:400])
+        body = e.body if isinstance(e.body, dict) else {}
+        code = str(body.get("code") or "")
+        if code in AUTH_ERRORS:
+            msg = AUTH_ERRORS[code]
+        elif code == "INSUFFICIENT_BALANCE":
+            msg = f"Saldo insuficiente na Darkvi ({body.get('details') or body.get('message')})"
+        elif body.get("message"):
+            msg = f"Darkvi {path}: {body['message']} (HTTP {e.status}{', ' + code if code else ''})"
+        else:
+            msg = f"Darkvi {path}: HTTP {e.status} {e.body!r}"[:400]
         raise DarkviError(msg, e.status, e.body) from e
 
 

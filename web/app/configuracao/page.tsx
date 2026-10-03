@@ -10,15 +10,15 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Field, SimpleSelect } from "@/components/fields";
-import { api, type Price, type SettingsPayload, type Track } from "@/lib/api";
+import { api, type Price, type SettingsPayload, type Track, type YoutubeQuota } from "@/lib/api";
 
 const KEYS: { id: string; label: string; test?: string; note?: string }[] = [
   { id: "darkvi", label: "Darkvi (TTS + imagens)", test: "darkvi" },
   { id: "anthropic", label: "Anthropic (Claude)", test: "anthropic" },
   { id: "pexels", label: "Pexels", test: "pexels" },
   { id: "pixabay", label: "Pixabay", test: "pixabay" },
-  { id: "youtube", label: "YouTube Data API", note: "Fase 3" },
-  { id: "gemini", label: "Google Gemini", note: "Fase 2 (análise de vídeo)" },
+  { id: "youtube", label: "YouTube Data API", test: "youtube", note: "o teste gasta 1 unidade" },
+  { id: "gemini", label: "Google Gemini", test: "gemini", note: "avalia a folha de miniaturas; sem chave, só ranking de texto" },
   { id: "fal", label: "fal.ai (vídeo IA)", note: "Fase 3" },
   { id: "elevenlabs", label: "ElevenLabs (música)", note: "Fase 4" },
   { id: "openai", label: "OpenAI", note: "opcional" },
@@ -45,6 +45,7 @@ export default function ConfiguracaoPage() {
   const [oauthJson, setOauthJson] = useState("");
   const [prices, setPrices] = useState<Price[]>([]);
   const [tracks, setTracks] = useState<Track[]>([]);
+  const [ytQuota, setYtQuota] = useState<YoutubeQuota | null>(null);
 
   async function load() {
     try {
@@ -53,6 +54,7 @@ export default function ConfiguracaoPage() {
       setSettings(d.settings);
       setPrices(await api.prices());
       setTracks(await api.tracks());
+      setYtQuota(await api.youtubeQuota());
     } catch (e) {
       toast.error(`Backend indisponível: ${(e as Error).message}`);
     }
@@ -119,10 +121,10 @@ export default function ConfiguracaoPage() {
     });
 
   return (
-    <div className="mx-auto flex max-w-4xl flex-col gap-6">
+    <div className="mx-auto flex max-w-5xl flex-col gap-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Configuração</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">Configuração</h1>
           <p className="text-sm text-muted-foreground">Chaves, provedores, render e biblioteca de músicas.</p>
         </div>
         <Button onClick={saveSettings}>
@@ -251,17 +253,158 @@ export default function ConfiguracaoPage() {
           <div className="flex items-center gap-4 text-sm">
             <Switch checked={s.youtube.enabled} onCheckedChange={(v) => patch(["youtube", "enabled"], v)} />
             <span className="w-32">YouTube</span>
-            <Switch
-              checked={s.youtube.creative_commons_only}
-              onCheckedChange={(v) => patch(["youtube", "creative_commons_only"], v)}
-            />
-            <span>Só Creative Commons</span>
+            <span className="text-xs text-muted-foreground">sempre só Creative Commons, em HD</span>
           </div>
-          {!s.youtube.creative_commons_only && (
-            <p className="text-xs text-amber-300">
-              Sem o filtro Creative Commons, o risco de Content ID e strikes aumenta muito.
+          {ytQuota && (
+            <div className="rounded-md border p-3 text-sm">
+              <p>
+                Cota do YouTube hoje ({ytQuota.day}, horário do Pacífico):{" "}
+                <b className={ytQuota.exhausted || ytQuota.searches_left === 0 ? "text-amber-300" : ""}>
+                  {ytQuota.available} un. disponíveis
+                </b>{" "}
+                · ≈ {ytQuota.searches_left} cena(s) · {ytQuota.used} usadas de {ytQuota.daily_quota} (reserva de{" "}
+                {ytQuota.reserve})
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {ytQuota.exhausted
+                  ? "O Google recusou por cota hoje: as cenas do YouTube vão para os bancos até a meia-noite do Pacífico."
+                  : "Zera à meia-noite do Pacífico (4h ou 5h em Brasília). Cada cena do YouTube gasta 101 unidades; buscas em cache não gastam."}
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Modelos do Claude por etapa</CardTitle>
+          <CardDescription>
+            Tarefas simples usam modelos mais baratos. O custo e os tokens de cada produção aparecem no card e em
+            llm_usage.json; os preços por modelo estão na tabela de preços abaixo.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 sm:grid-cols-3">
+          {(
+            [
+              ["plan", "Brief + planejamento das cenas"],
+              ["rewrite", "Reescrita de queries"],
+              ["overlay", "Correção de idioma dos overlays"],
+            ] as const
+          ).map(([task, label]) => (
+            <Field key={task} label={label}>
+              <SimpleSelect
+                value={s.llm?.[task]?.model ?? null}
+                onChange={(v) => patch(["llm", task, "model"], v)}
+                options={[
+                  { value: "claude-haiku-4-5", label: "Haiku 4.5 (mais barato)" },
+                  { value: "claude-sonnet-5-5", label: "Sonnet 5.5" },
+                  { value: "claude-opus-5-5", label: "Opus 5.5 (mais caro)" },
+                ]}
+              />
+            </Field>
+          ))}
+          <Field label="Esforço do planejamento" hint="Raciocínio é cobrado como saída; baixo passou nos testes.">
+            <SimpleSelect
+              value={s.llm?.plan?.effort ?? "low"}
+              onChange={(v) => patch(["llm", "plan", "effort"], v)}
+              options={["low", "medium", "high"].map((e) => ({ value: e, label: e }))}
+            />
+          </Field>
+          <Field label="Validade do cache do prompt" hint="1 h custa mais para gravar; vale se as etapas ficarem distantes.">
+            <SimpleSelect
+              value={s.llm?.cache_ttl ?? "5m"}
+              onChange={(v) => patch(["llm", "cache_ttl"], v)}
+              options={[
+                { value: "5m", label: "5 minutos" },
+                { value: "1h", label: "1 hora" },
+              ]}
+            />
+          </Field>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Seleção de cenas</CardTitle>
+          <CardDescription>
+            Cada cena: busca, filtro técnico, top {s.selection.prerank_keep} por texto, 1 folha de miniaturas na IA de
+            visão (+1 no desempate) e download só do vencedor.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 sm:grid-cols-3">
+          <Field label="Modelo de visão (Gemini Flash)" hint="O teste do Gemini lista os modelos disponíveis.">
+            <Input value={s.selection.gemini_model} onChange={(e) => patch(["selection", "gemini_model"], e.target.value)} />
+          </Field>
+          <Field label="Nota mínima" hint="Abaixo disso, tenta a próxima fonte.">
+            <Input
+              type="number"
+              step={0.5}
+              value={s.selection.min_score}
+              onChange={(e) => patch(["selection", "min_score"], Number(e.target.value))}
+            />
+          </Field>
+          <Field label="Aceite direto (nota / vantagem)" hint="Acima disso, não há desempate.">
+            <div className="flex gap-2">
+              <Input
+                type="number"
+                step={0.5}
+                value={s.selection.accept_score}
+                onChange={(e) => patch(["selection", "accept_score"], Number(e.target.value))}
+              />
+              <Input
+                type="number"
+                step={0.5}
+                value={s.selection.accept_gap}
+                onChange={(e) => patch(["selection", "accept_gap"], Number(e.target.value))}
+              />
+            </div>
+          </Field>
+          <Field label="Franquias sempre bloqueadas" className="sm:col-span-3" hint="Separadas por vírgula. Valem em qualquer cena, mesmo quando o estilo estilizado é aceito.">
+            <Textarea
+              rows={2}
+              value={(s.selection.blocked_franchises ?? []).join(", ")}
+              onChange={(e) =>
+                patch(
+                  ["selection", "blocked_franchises"],
+                  e.target.value.split(",").map((x: string) => x.trim()).filter(Boolean),
+                )
+              }
+            />
+          </Field>
+          {s.gemini?.blocked_until && new Date(s.gemini.blocked_until) > new Date() && (
+            <p className="text-sm text-amber-300 sm:col-span-3">
+              Gemini pausado até {new Date(s.gemini.blocked_until).toLocaleString("pt-BR")}: {s.gemini.blocked_reason}.
+              Até lá, as cenas são escolhidas pelo ranking de texto. O plano gratuito do Google permite poucas
+              avaliações por dia; ative o faturamento no Google AI Studio para usar a validação visual em vídeos
+              completos.
             </p>
           )}
+          <Field label="Cache de buscas (dias)">
+            <Input
+              type="number"
+              min={1}
+              value={s.selection.search_cache_days}
+              onChange={(e) => patch(["selection", "search_cache_days"], Number(e.target.value))}
+            />
+          </Field>
+          <Field label="Queries por cena (bancos / YouTube)">
+            <div className="flex gap-2">
+              <Input
+                type="number"
+                min={1}
+                max={3}
+                value={s.selection.stock_queries_per_scene}
+                onChange={(e) => patch(["selection", "stock_queries_per_scene"], Number(e.target.value))}
+              />
+              <Input
+                type="number"
+                min={1}
+                max={3}
+                value={s.selection.youtube_queries_per_scene}
+                onChange={(e) => patch(["selection", "youtube_queries_per_scene"], Number(e.target.value))}
+              />
+            </div>
+          </Field>
         </CardContent>
       </Card>
 

@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -19,15 +23,51 @@ class FFmpegError(RuntimeError):
         self.log = log
 
 
-def _tool(name: str) -> str:
-    configured = load_settings().get("ffmpeg_dir")
+def _fresh_windows_path() -> str:
+    """PATH atual do registro (Máquina + Usuário). Processos abertos antes de instalar o FFmpeg,
+    como um terminal do VS Code, herdam um PATH antigo que ainda não tem a pasta nova."""
+    if os.name != "nt":
+        return ""
+    import winreg
+
+    parts = []
+    for root, key in ((winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                      (winreg.HKEY_CURRENT_USER, "Environment")):
+        try:
+            with winreg.OpenKey(root, key) as k:
+                parts.append(os.path.expandvars(winreg.QueryValueEx(k, "Path")[0]))
+        except OSError:
+            pass
+    return os.pathsep.join(parts)
+
+
+def _winget_dirs() -> list[str]:
+    base = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet"
+    dirs = [str(p) for p in sorted((base / "Packages").glob("Gyan.FFmpeg*/*/bin"), reverse=True)]
+    return dirs + [str(base / "Links")]
+
+
+@lru_cache(maxsize=8)
+def _locate(name: str, configured: str | None) -> str | None:
+    from ... import paths
+
+    bundled = paths.bundled_bin_dir()  # app instalado: bin\ffmpeg.exe ao lado do executável
+    if bundled and (bundled / f"{name}.exe").exists():
+        return str(bundled / f"{name}.exe")
     if configured:
         candidate = Path(configured) / f"{name}.exe"
         if candidate.exists():
             return str(candidate)
-    found = shutil.which(name)
+    return (shutil.which(name)
+            or shutil.which(name, path=_fresh_windows_path())
+            or shutil.which(name, path=os.pathsep.join(_winget_dirs())))
+
+
+def _tool(name: str) -> str:
+    found = _locate(name, load_settings().get("ffmpeg_dir"))
     if not found:
-        raise FFmpegError(f"{name} não encontrado no PATH (instale o FFmpeg ou defina ffmpeg_dir na Configuração)")
+        _locate.cache_clear()  # tenta de novo na próxima chamada (ex.: instalado depois)
+        raise FFmpegError(f"{name} não encontrado (instale o FFmpeg ou defina a pasta dele em Configuração → Render)")
     return found
 
 
@@ -48,9 +88,38 @@ def available() -> bool:
         return False
 
 
+@lru_cache(maxsize=1)
+def amf_available() -> bool:
+    """O encoder h264_amf funciona neste PC? Estar listado não basta (aparece mesmo sem placa AMD): codifica alguns
+    quadros de teste. O render rápido por GPU só é oferecido quando isto é verdade (§3.5)."""
+    try:
+        proc = subprocess.run([ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                               "color=c=black:s=256x144:r=30:d=0.2", "-c:v", "h264_amf", "-f", "null", "-"],
+                              capture_output=True, timeout=30, creationflags=_CREATE_NO_WINDOW)
+        return proc.returncode == 0
+    except (FFmpegError, OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def version() -> str | None:
+    try:
+        out = subprocess.run([ffmpeg_bin(), "-version"], capture_output=True, text=True, timeout=15,
+                             creationflags=_CREATE_NO_WINDOW).stdout
+        return out.splitlines()[0] if out else None
+    except (FFmpegError, OSError, subprocess.TimeoutExpired):
+        return None
+
+
+STALL_SECONDS = 120
+
+
 def run(args: Sequence[str], cwd: Path | None = None, on_progress: Callable[[float], None] | None = None,
-        total_seconds: float | None = None) -> None:
-    """Executa ffmpeg. Com on_progress, lê `-progress pipe:1` e reporta segundos processados."""
+        total_seconds: float | None = None, stall_seconds: float = STALL_SECONDS) -> None:
+    """Executa ffmpeg. Com on_progress, lê `-progress pipe:1` e reporta segundos processados.
+
+    Se o tempo processado não avançar por `stall_seconds`, o processo é encerrado (FFmpegError) em vez de
+    deixar a produção presa para sempre.
+    """
     cmd = [ffmpeg_bin(), "-hide_banner", "-nostdin", "-y", "-loglevel", "error"]
     if on_progress:
         cmd += ["-progress", "pipe:1", "-nostats"]
@@ -66,14 +135,31 @@ def run(args: Sequence[str], cwd: Path | None = None, on_progress: Callable[[flo
         proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=err, stdin=subprocess.DEVNULL,
                                 text=True, encoding="utf-8", errors="replace", creationflags=_CREATE_NO_WINDOW)
         assert proc.stdout
+        state = {"secs": -1.0, "changed": time.monotonic(), "stalled": False}
+
+        def watchdog() -> None:
+            while proc.poll() is None:
+                if time.monotonic() - state["changed"] > stall_seconds:
+                    state["stalled"] = True
+                    proc.kill()
+                    return
+                time.sleep(2)
+
+        threading.Thread(target=watchdog, daemon=True).start()
         for line in proc.stdout:
             if line.startswith("out_time_us=") or line.startswith("out_time_ms="):
                 try:
                     secs = int(line.split("=", 1)[1]) / 1_000_000
                 except ValueError:
                     continue
+                if secs > state["secs"]:
+                    state["secs"], state["changed"] = secs, time.monotonic()
                 on_progress(min(1.0, secs / total_seconds) if total_seconds else secs)
         code = proc.wait()
+        if state["stalled"]:
+            err.seek(0)
+            raise FFmpegError(f"ffmpeg ficou {stall_seconds:.0f}s sem avançar (parado em {state['secs']:.1f}s)",
+                              err.read()[-6000:])
         err.seek(0)
         stderr = err.read()
     if code != 0:

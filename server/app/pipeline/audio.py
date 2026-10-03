@@ -8,6 +8,40 @@ from .render import ffmpeg
 from .srt import merge_srts
 
 
+def _tts_cache_paths(text: str, voice: str):
+    import hashlib
+
+    from ..config import CACHE_DIR
+
+    key = hashlib.sha256(f"{voice}|{text}".encode()).hexdigest()
+    d = CACHE_DIR / "tts"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{key}.mp3", d / f"{key}.srt"
+
+
+def _from_tts_cache(text: str, voice: str, mp3, srt) -> bool:
+    """Mesmo texto + mesma voz = mesma narração: reaproveita sem gastar saldo da Darkvi."""
+    import shutil
+
+    c_mp3, c_srt = _tts_cache_paths(text, voice)
+    if not c_mp3.exists():
+        return False
+    shutil.copy(c_mp3, mp3)
+    if c_srt.exists():
+        shutil.copy(c_srt, srt)
+    return True
+
+
+def _to_tts_cache(text: str, voice: str, mp3, srt) -> None:
+    import shutil
+
+    c_mp3, c_srt = _tts_cache_paths(text, voice)
+    if mp3.exists():
+        shutil.copy(mp3, c_mp3)
+    if srt.exists():
+        shutil.copy(srt, c_srt)
+
+
 def _normalize(src, dest) -> None:
     ffmpeg.run(["-i", str(src), "-af", "loudnorm=I=-14:TP=-1.5:LRA=11", "-ar", "48000", "-ac", "2",
                 "-c:a", "pcm_s16le", str(dest)])
@@ -31,13 +65,19 @@ def run(ctx: JobContext) -> str:
         for i, chunk in enumerate(chunks):
             mp3 = ctx.path("audio", f"tts_{i:02d}.mp3")
             srt = ctx.path("audio", f"tts_{i:02d}.srt")
-            if not mp3.exists():
+            if mp3.exists():
+                pass  # já baixado nesta produção (retry)
+            elif _from_tts_cache(chunk, voice, mp3, srt):
+                ctx.progress((i + 1) / len(chunks) * 0.85, "Narração reaproveitada do cache (sem custo)")
+            else:
                 def on_poll(status: str, i=i) -> None:
                     ctx.check_cancel()
                     ctx.progress((i + 0.5) / len(chunks) * 0.85, f"Gerando narração ({status or 'na fila'})")
 
                 tts.synthesize(chunk, voice, ctx.config.title, mp3, srt, poll_seconds=dcfg["tts_poll_seconds"],
-                               timeout_seconds=dcfg["tts_timeout_seconds"], on_poll=on_poll)
+                               timeout_seconds=dcfg["tts_timeout_seconds"], on_poll=on_poll,
+                               state_file=ctx.path("audio", f"tts_{i:02d}.json"))
+                _to_tts_cache(chunk, voice, mp3, srt)
             mp3s.append(mp3)
             srts.append(srt)
     except DarkviError as e:

@@ -8,6 +8,8 @@ from .base import Candidate, Rendition
 LOCALES = {"en": "en-US", "pt": "pt-BR", "es": "es-ES", "fr": "fr-FR", "de": "de-DE", "it": "it-IT"}
 # A documentação atual usa /v1/videos/search; a rota antiga /videos/search fica como reserva.
 ENDPOINTS = ["https://api.pexels.com/v1/videos/search", "https://api.pexels.com/videos/search"]
+PHOTOS = "https://api.pexels.com/v1/search"
+LICENSE = "Pexels License"
 
 
 class Pexels:
@@ -22,8 +24,9 @@ class Pexels:
             raise ProviderError("Chave do Pexels não configurada", 401)
         return key
 
-    def _get(self, params: dict) -> dict:
-        for endpoint in [self._endpoint] + [e for e in ENDPOINTS if e != self._endpoint]:
+    def _get(self, params: dict, photos: bool = False) -> dict:
+        endpoints = [PHOTOS] if photos else [self._endpoint] + [e for e in ENDPOINTS if e != self._endpoint]
+        for endpoint in endpoints:
             resp = request("GET", endpoint, headers={"Authorization": self._key()}, params=params)
             if resp.status_code == 404:
                 continue
@@ -31,11 +34,12 @@ class Pexels:
                 raise ProviderError("Pexels: limite de requisições atingido (padrão: 200/h, 20.000/mês)", 429,
                                     {"remaining": resp.headers.get("X-Ratelimit-Remaining"),
                                      "reset": resp.headers.get("X-Ratelimit-Reset")})
-            self._endpoint = endpoint
+            if not photos:
+                self._endpoint = endpoint
             return json_or_raise(resp, "Pexels")
         raise ProviderError("Pexels: endpoint de busca de vídeos não encontrado", 404)
 
-    def search(self, query: str, per_page: int = 15, lang: str = "en") -> list[Candidate]:
+    def search(self, query: str, per_page: int = 15, lang: str = "en", **_) -> list[Candidate]:
         body = self._get({"query": query, "per_page": per_page, "orientation": "landscape", "size": "large",
                           "locale": LOCALES.get(lang, "en-US")})
         out = []
@@ -55,8 +59,28 @@ class Pexels:
                 provider=self.id, external_id=str(v["id"]), title=" ".join(words + tags).strip(),
                 duration=float(v.get("duration") or 0), width=v.get("width") or 0, height=v.get("height") or 0,
                 page_url=v.get("url") or "", thumbnail=v.get("image"), renditions=renditions, query=query,
-                author=user.get("name", ""), author_url=user.get("url", ""),
-                preview_frames=[p["picture"] for p in v.get("video_pictures", []) if p.get("picture")],
+                author=user.get("name", ""), author_url=user.get("url", ""), license=LICENSE,
+                # video_pictures: ~15 frames distribuídos pelo clipe, em ordem (campo "nr")
+                preview_frames=[p["picture"] for p in sorted(v.get("video_pictures", []), key=lambda p: p.get("nr", 0))
+                                if p.get("picture")],
+            ))
+        return out
+
+    def search_photos(self, query: str, per_page: int = 15, lang: str = "en", **_) -> list[Candidate]:
+        body = self._get({"query": query, "per_page": per_page, "orientation": "landscape", "size": "large",
+                          "locale": LOCALES.get(lang, "en-US")}, photos=True)
+        out = []
+        for ph in body.get("photos", []):
+            src = ph.get("src") or {}
+            if not src.get("original"):
+                continue
+            w, h = ph.get("width") or 0, ph.get("height") or 0
+            out.append(Candidate(
+                provider=self.id, external_id=f"photo-{ph['id']}", title=ph.get("alt") or "", duration=0.0,
+                width=w, height=h, page_url=ph.get("url") or "", thumbnail=src.get("large"),
+                renditions=[Rendition(src["original"], w, h)], query=query, author=ph.get("photographer", ""),
+                author_url=ph.get("photographer_url", ""), license=LICENSE, is_image=True,
+                preview_frames=[src.get("large") or src["original"]],
             ))
         return out
 

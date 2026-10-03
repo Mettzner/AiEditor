@@ -1,13 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ExternalLink, FolderOpen, RotateCcw, Trash2, X } from "lucide-react";
+import { ChevronDown, ExternalLink, FolderOpen, RotateCcw, Sparkles, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Progress } from "@/components/ui/progress";
+import { DirectionDialog } from "@/components/direction-dialog";
 import { api, fmtDuration, fmtMoney, type Production, type Severity } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -18,6 +19,17 @@ const STATUS: Record<Production["status"], { label: string; className: string }>
   failed: { label: "Falhou", className: "bg-red-500/15 text-red-300" },
   cancel_requested: { label: "Cancelando", className: "bg-amber-500/15 text-amber-300" },
   cancelled: { label: "Cancelado", className: "bg-muted text-muted-foreground" },
+};
+
+const STEP_LABEL: Record<string, string> = {
+  audio: "Áudio",
+  transcribe: "Transcrição",
+  plan: "Planejamento",
+  select: "Seleção de cenas",
+  generate: "Geração de IA",
+  direct: "Direção",
+  render: "Render",
+  upload: "Upload",
 };
 
 const SEVERITY: Record<Severity, { label: string; className: string }> = {
@@ -40,73 +52,130 @@ export function ProductionCard({ p }: { p: Production }) {
     }
   }
 
-  return (
-    <Card className="gap-3">
-      <CardHeader className="gap-1">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h3 className="truncate font-medium leading-tight" title={p.title}>
-              {p.title}
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              {p.channel_name ?? "—"} · #{p.id}
-            </p>
-          </div>
-          <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-medium", status.className)}>
-            {status.label}
-          </span>
-        </div>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-center justify-between text-xs">
-            <span className="truncate text-muted-foreground">{p.step_label ?? "—"}</span>
-            <span className="tabular-nums">{Math.round(p.progress)}%</span>
-          </div>
-          <Progress value={p.progress} />
-        </div>
+  const times = ["select", "generate", "render"].filter((k) => p.step_seconds?.[k] != null);
 
-        {p.status === "done" && (
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-            <span>Duração {fmtDuration(p.duration_seconds)}</span>
-            <span>Custo {fmtMoney(p.cost_actual)}</span>
-            {p.drive_url ? (
-              <a
-                href={p.drive_url}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 text-sky-300 hover:underline"
-              >
-                <ExternalLink className="size-3" /> Abrir no Drive
-              </a>
-            ) : (
-              p.output_path && (
-                <span className="inline-flex items-center gap-1" title={p.output_path}>
-                  <FolderOpen className="size-3" /> salvo localmente
+  return (
+    <Card className="gap-0 py-3 [--card-spacing:--spacing(4)]">
+      <CardContent>
+        <Collapsible open={open} onOpenChange={setOpen}>
+          {/* linha principal: identificação · progresso · status · ações */}
+          <div className="flex items-center gap-4">
+            <div className="w-52 min-w-0 shrink-0">
+              <h3 className="truncate font-medium leading-tight" title={p.title}>
+                {p.title}
+              </h3>
+              <p className="truncate text-xs text-muted-foreground">
+                {p.channel_name ?? "—"} · #{p.id}
+              </p>
+            </div>
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <span className="truncate text-muted-foreground" title={p.step_label ?? ""}>
+                  {p.step_label ?? "—"}
                 </span>
-              )
+                <span className="tabular-nums">{Math.round(p.progress)}%</span>
+              </div>
+              <Progress value={p.progress} />
+            </div>
+            <span className={cn("shrink-0 rounded-sm px-2 py-0.5 text-xs font-medium", status.className)}>
+              {status.label}
+            </span>
+            <div className="flex shrink-0 items-center gap-1.5">
+              {(p.status === "done" || p.status === "failed" || ["direct", "render", "upload"].includes(p.step ?? "")) && (
+                <DirectionDialog productionId={p.id} title={p.title} />
+              )}
+              {(p.status === "running" || p.status === "queued") && (
+                <Button variant="ghost" size="sm" onClick={() => act(() => api.cancel(p.id), "Cancelamento pedido")}>
+                  <X /> Cancelar
+                </Button>
+              )}
+              {(p.status === "failed" || p.status === "cancelled") && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  title="Continua da etapa que parou: o que já foi feito (áudio, plano, clipes, cenas prontas) é reaproveitado"
+                  onClick={() => act(() => api.retry(p.id), "Produção retomada de onde parou")}
+                >
+                  <RotateCcw /> Retomar{p.step && STEP_LABEL[p.step] ? ` de: ${STEP_LABEL[p.step]}` : ""}
+                </Button>
+              )}
+              {!active && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Excluir"
+                  onClick={() => act(() => api.deleteProduction(p.id), "Produção excluída")}
+                >
+                  <Trash2 />
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {/* linha de detalhes: tempos · duração · custo · Drive · IA · problemas */}
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            {times.length > 0 && (
+              <span title={JSON.stringify(p.step_seconds)}>
+                {times.map((k) => `${STEP_LABEL[k]} ${fmtDuration(p.step_seconds![k])}`).join(" · ")}
+              </span>
+            )}
+            {p.status === "done" && (
+              <>
+                <span>Duração {fmtDuration(p.duration_seconds)}</span>
+                <span>Custo {fmtMoney(p.cost_actual)}</span>
+                {p.drive_url ? (
+                  <a
+                    href={p.drive_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-sky-300 hover:underline"
+                  >
+                    <ExternalLink className="size-3" /> Abrir no Drive
+                  </a>
+                ) : (
+                  p.output_path && (
+                    <span className="inline-flex items-center gap-1" title={p.output_path}>
+                      <FolderOpen className="size-3" /> salvo localmente
+                    </span>
+                  )
+                )}
+              </>
+            )}
+            {p.llm_usage && (
+              <span
+                title={`Claude + Gemini nesta produção${p.llm_usage.cache_read > 0 ? ` · ${(p.llm_usage.cache_read / 1000).toFixed(1)} mil tokens do cache` : ""}${p.llm_usage.top_task ? ` · mais cara: ${p.llm_usage.top_task}` : ""}`}
+              >
+                IA {fmtMoney(p.llm_usage.cost)} · {(p.llm_usage.tokens / 1000).toFixed(1)} mil tokens
+              </span>
+            )}
+            {p.ai_content && p.status === "done" && (
+              <span
+                className="inline-flex items-center gap-1 text-violet-300"
+                title="Contém mídia gerada por IA: marque “conteúdo alterado” ao publicar no YouTube."
+              >
+                <Sparkles className="size-3" /> mídia de IA
+              </span>
+            )}
+            {p.status === "failed" && p.error && (
+              <span className="max-w-xl truncate text-red-300" title={p.error}>
+                {p.error}
+              </span>
+            )}
+            {p.issues.length > 0 && (
+              <CollapsibleTrigger className="ml-auto flex items-center gap-1.5">
+                {(["error", "warning", "info"] as Severity[]).map((sev) =>
+                  p.issue_counts[sev] ? (
+                    <Badge key={sev} variant="outline" className={SEVERITY[sev].className}>
+                      {p.issue_counts[sev]} {SEVERITY[sev].label}
+                    </Badge>
+                  ) : null,
+                )}
+                <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />
+              </CollapsibleTrigger>
             )}
           </div>
-        )}
-        {p.status === "failed" && p.error && <p className="line-clamp-2 text-xs text-red-300">{p.error}</p>}
-        {p.ai_content && p.status === "done" && (
-          <p className="text-xs text-muted-foreground">
-            Contém mídia gerada por IA: marque “conteúdo alterado” ao publicar no YouTube.
-          </p>
-        )}
 
-        {p.issues.length > 0 && (
-          <Collapsible open={open} onOpenChange={setOpen}>
-            <CollapsibleTrigger className="flex w-full items-center gap-1.5 text-xs">
-              {(["error", "warning", "info"] as Severity[]).map((sev) =>
-                p.issue_counts[sev] ? (
-                  <Badge key={sev} variant="outline" className={SEVERITY[sev].className}>
-                    {p.issue_counts[sev]} {SEVERITY[sev].label}
-                  </Badge>
-                ) : null,
-              )}
-              <ChevronDown className={cn("ml-auto size-3.5 transition-transform", open && "rotate-180")} />
-            </CollapsibleTrigger>
+          {p.issues.length > 0 && (
             <CollapsibleContent>
               <ul className="mt-2 flex max-h-56 flex-col gap-1.5 overflow-y-auto pr-1">
                 {p.issues.map((i) => (
@@ -130,31 +199,8 @@ export function ProductionCard({ p }: { p: Production }) {
                 ))}
               </ul>
             </CollapsibleContent>
-          </Collapsible>
-        )}
-
-        <div className="flex justify-end gap-1.5">
-          {(p.status === "running" || p.status === "queued") && (
-            <Button variant="ghost" size="sm" onClick={() => act(() => api.cancel(p.id), "Cancelamento pedido")}>
-              <X /> Cancelar
-            </Button>
           )}
-          {(p.status === "failed" || p.status === "cancelled") && (
-            <Button variant="outline" size="sm" onClick={() => act(() => api.retry(p.id), "Produção retomada")}>
-              <RotateCcw /> Tentar novamente
-            </Button>
-          )}
-          {!active && (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Excluir"
-              onClick={() => act(() => api.deleteProduction(p.id), "Produção excluída")}
-            >
-              <Trash2 />
-            </Button>
-          )}
-        </div>
+        </Collapsible>
       </CardContent>
     </Card>
   );

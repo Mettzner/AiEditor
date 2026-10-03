@@ -10,15 +10,33 @@ import { Input } from "@/components/ui/input";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { AI_MEDIA } from "@/components/channel-form";
+import { AI_MEDIA, LANGS } from "@/components/channel-form";
 import { Field, SimpleSelect, SplitSlider } from "@/components/fields";
-import { api, fmtDuration, fmtMoney, type Channel, type Direction, type Estimate } from "@/lib/api";
+import { VoicePicker } from "@/components/voice-picker";
+import {
+  api,
+  fmtDuration,
+  fmtMoney,
+  MEDIA_STYLES,
+  SELECTION_MODES,
+  type Channel,
+  type Direction,
+  type Estimate,
+  type MediaStyle,
+  type PeriodLook,
+  PERIOD_LOOKS,
+  type SelectionMode,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-const STEPS = ["Conteúdo", "Direção", "Composição e ritmo", "Resumo"];
+const STEPS = ["Conteúdo", "Direção e estilo", "Composição e ritmo", "Resumo"];
 const WPM: Record<string, number> = { en: 150, pt: 145, es: 150 };
 
-interface Composition {
+/** Escolhas da Criação; vêm pré-preenchidas com o padrão salvo do canal. */
+interface Choices {
+  language: string;
+  search_language: string;
+  visual_style: string;
   direction: string;
   real_pct: number;
   ai_media: "both" | "video" | "image";
@@ -26,11 +44,22 @@ interface Composition {
   avg_scene_seconds: number;
   subtitles: boolean;
   music_enabled: boolean;
+  media_style: MediaStyle;
+  selection_mode: SelectionMode;
+  llm_economy: boolean;
+  period_look: PeriodLook;
+  period_grade: boolean;
+  context_cards: boolean;
+  tts_voice: string | null;
+  tts_voice_name: string | null;
 }
 
-function fromChannel(c: Channel): Composition {
+function fromChannel(c: Channel): Choices {
   const p = c.preset;
   return {
+    language: p.language,
+    search_language: p.search_language,
+    visual_style: p.visual_style,
     direction: p.direction,
     real_pct: p.real_pct,
     ai_media: p.ai_media,
@@ -38,6 +67,14 @@ function fromChannel(c: Channel): Composition {
     avg_scene_seconds: p.avg_scene_seconds,
     subtitles: p.subtitles,
     music_enabled: p.music.enabled,
+    media_style: p.media_style ?? "real_preferred",
+    selection_mode: p.selection_mode ?? "fast",
+    llm_economy: p.llm_economy ?? false,
+    period_look: p.period_look ?? "cinematic",
+    period_grade: p.period_grade ?? true,
+    context_cards: p.context_cards ?? true,
+    tts_voice: p.tts_voice,
+    tts_voice_name: p.tts_voice_name,
   };
 }
 
@@ -52,7 +89,8 @@ export default function CriacaoPage() {
   const [audioMode, setAudioMode] = useState<"tts" | "upload">("tts");
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioSeconds, setAudioSeconds] = useState<number | null>(null);
-  const [comp, setComp] = useState<Composition | null>(null);
+  const [c, setChoices] = useState<Choices | null>(null);
+  const [saveDefault, setSaveDefault] = useState(false);
   const [estimate, setEstimate] = useState<Estimate | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -66,11 +104,11 @@ export default function CriacaoPage() {
       .catch((e) => toast.error(`Backend indisponível: ${(e as Error).message}`));
   }, []);
 
-  const channel = channels.find((c) => c.id === channelId) ?? null;
+  const channel = channels.find((x) => x.id === channelId) ?? null;
 
-  function pickChannel(c: Channel) {
-    setChannelId(c.id);
-    setComp(fromChannel(c));
+  function pickChannel(ch: Channel) {
+    setChannelId(ch.id);
+    setChoices(fromChannel(ch));
   }
 
   function pickAudio(file: File | null) {
@@ -81,43 +119,42 @@ export default function CriacaoPage() {
     el.onloadedmetadata = () => setAudioSeconds(el.duration);
   }
 
+  const set = <K extends keyof Choices>(k: K, v: Choices[K]) => setChoices((x) => (x ? { ...x, [k]: v } : x));
+
   const words = useMemo(() => script.split(/\s+/).filter(Boolean).length, [script]);
-  const wpm = WPM[channel?.preset.language ?? "en"] ?? 150;
+  const wpm = WPM[c?.language ?? "en"] ?? 150;
   const duration = audioMode === "upload" && audioSeconds ? audioSeconds : (words / wpm) * 60;
 
   const preview = useMemo(() => {
-    if (!comp) return null;
-    const real = (duration * comp.real_pct) / 100;
-    const yt = (real * comp.youtube_pct) / 100;
+    if (!c) return null;
+    const real = (duration * c.real_pct) / 100;
+    const yt = (real * c.youtube_pct) / 100;
     return {
-      scenes: duration ? Math.max(1, Math.round(duration / comp.avg_scene_seconds)) : 0,
+      scenes: duration ? Math.max(1, Math.round(duration / c.avg_scene_seconds)) : 0,
       real,
       yt,
       stock: real - yt,
       ai: duration - real,
     };
-  }, [comp, duration]);
+  }, [c, duration]);
 
   const valid = [
-    !!channel &&
-      title.trim().length > 0 &&
-      words > 0 &&
-      (audioMode === "upload" ? !!audioFile : !!channel?.preset.tts_voice),
-    !!comp?.direction,
-    !!comp && comp.avg_scene_seconds >= 2 && comp.avg_scene_seconds <= 20,
+    !!channel && !!c && title.trim().length > 0 && words > 0 && (audioMode === "upload" ? !!audioFile : !!c.tts_voice),
+    !!c?.direction,
+    !!c && c.avg_scene_seconds >= 2 && c.avg_scene_seconds <= 20,
     true,
   ];
 
   function goNext() {
     const next = step + 1;
     setStep(next);
-    if (next !== 3 || !channel || !comp) return;
+    if (next !== 3 || !channel || !c) return;
     setEstimate(null);
     api
       .estimate({
         channel_id: channel.id,
         script,
-        config: { ...comp },
+        config: { ...c },
         audio_seconds: audioMode === "upload" ? audioSeconds : null,
         audio_mode: audioMode,
       })
@@ -126,17 +163,18 @@ export default function CriacaoPage() {
   }
 
   async function submit() {
-    if (!channel || !comp) return;
+    if (!channel || !c) return;
     setSubmitting(true);
     const fd = new FormData();
     fd.append("channel_id", String(channel.id));
     fd.append("title", title);
     fd.append("script", script);
-    fd.append("config", JSON.stringify(comp));
+    fd.append("config", JSON.stringify(c));
+    fd.append("save_as_default", String(saveDefault));
     if (audioMode === "upload" && audioFile) fd.append("audio", audioFile);
     try {
       await api.createProduction(fd);
-      toast.success("Produção na fila");
+      toast.success(saveDefault ? "Produção na fila e padrão do canal atualizado" : "Produção na fila");
       router.push("/");
     } catch (e) {
       toast.error((e as Error).message);
@@ -144,17 +182,18 @@ export default function CriacaoPage() {
     }
   }
 
-  const setC = <K extends keyof Composition>(k: K, v: Composition[K]) => setComp((c) => (c ? { ...c, [k]: v } : c));
+  const aiLabel = c ? AI_MEDIA.find((m) => m.value === c.ai_media)?.label.toLowerCase() : "";
+  const langLabel = (v: string) => LANGS.find((l) => l.value === v)?.label ?? v;
 
   return (
-    <div className="mx-auto flex min-h-[calc(100vh-3.5rem)] max-w-3xl flex-col">
-      <h1 className="mb-5 text-xl font-semibold tracking-tight">Nova produção</h1>
+    <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-5xl flex-col">
+      <h1 className="mb-6 text-2xl font-semibold tracking-tight">Nova produção</h1>
       <ol className="mb-6 flex items-center gap-2">
         {STEPS.map((s, i) => (
           <li key={s} className="flex flex-1 items-center gap-2">
             <span
               className={cn(
-                "flex size-6 shrink-0 items-center justify-center rounded-full border text-xs",
+                "flex size-7 shrink-0 items-center justify-center rounded-md border text-xs",
                 i < step && "border-emerald-500 bg-emerald-500/20 text-emerald-300",
                 i === step && "border-foreground font-medium",
                 i > step && "text-muted-foreground",
@@ -169,19 +208,32 @@ export default function CriacaoPage() {
       </ol>
 
       <Card className="flex-1">
-        <CardContent className="flex flex-col gap-5">
+        <CardContent className="flex flex-col gap-6">
           {step === 0 && (
             <>
-              <Field label="Canal" hint={channels.length === 0 ? "Crie um canal primeiro, na tela Canais." : undefined}>
-                <SimpleSelect
-                  value={channelId ? String(channelId) : null}
-                  onChange={(v) => {
-                    const c = channels.find((x) => x.id === Number(v));
-                    if (c) pickChannel(c);
-                  }}
-                  options={channels.map((c) => ({ value: String(c.id), label: c.name }))}
-                />
-              </Field>
+              <div className="grid gap-5 sm:grid-cols-[2fr_1fr]">
+                <Field
+                  label="Canal"
+                  hint={channels.length === 0 ? "Crie um canal primeiro, na tela Canais." : undefined}
+                >
+                  <SimpleSelect
+                    value={channelId ? String(channelId) : null}
+                    onChange={(v) => {
+                      const ch = channels.find((x) => x.id === Number(v));
+                      if (ch) pickChannel(ch);
+                    }}
+                    options={channels.map((x) => ({ value: String(x.id), label: x.name }))}
+                  />
+                </Field>
+                <Field label="Idioma do roteiro / narração">
+                  <SimpleSelect
+                    value={c?.language ?? null}
+                    onChange={(v) => set("language", v)}
+                    options={LANGS}
+                    disabled={!c}
+                  />
+                </Field>
+              </div>
               <Field label="Título">
                 <Input value={title} onChange={(e) => setTitle(e.target.value)} />
               </Field>
@@ -189,83 +241,141 @@ export default function CriacaoPage() {
                 label="Roteiro"
                 hint={`${words} palavras · duração estimada ≈ ${fmtDuration((words / wpm) * 60)}`}
               >
-                <Textarea value={script} onChange={(e) => setScript(e.target.value)} rows={12} />
+                <Textarea value={script} onChange={(e) => setScript(e.target.value)} className="min-h-72" />
               </Field>
               <Field label="Áudio da narração">
                 <RadioGroup value={audioMode} onValueChange={(v) => setAudioMode(v as "tts" | "upload")}>
                   <label className="flex items-center gap-2 text-sm">
-                    <RadioGroupItem value="tts" /> Gerar automaticamente (TTS com a voz do canal)
+                    <RadioGroupItem value="tts" /> Gerar automaticamente com um narrador
                   </label>
                   <label className="flex items-center gap-2 text-sm">
                     <RadioGroupItem value="upload" /> Enviar áudio (mp3, wav ou m4a)
                   </label>
                 </RadioGroup>
-                {audioMode === "tts" && channel && !channel.preset.tts_voice && (
-                  <p className="flex items-center gap-1.5 text-xs text-amber-300">
-                    <AlertTriangle className="size-3.5" /> Este canal não tem voz TTS definida.
-                  </p>
-                )}
-                {audioMode === "upload" && (
-                  <div className="flex items-center gap-3">
-                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-sm hover:bg-muted">
-                      <Upload className="size-4" /> Escolher arquivo
-                      <input
-                        type="file"
-                        accept=".mp3,.wav,.m4a,audio/*"
-                        className="hidden"
-                        onChange={(e) => pickAudio(e.target.files?.[0] ?? null)}
-                      />
-                    </label>
-                    <span className="truncate text-xs text-muted-foreground">
-                      {audioFile ? `${audioFile.name} · ${fmtDuration(audioSeconds)}` : "nenhum arquivo"}
-                    </span>
-                  </div>
-                )}
+              </Field>
+              {audioMode === "tts" && c && (
+                <Field label="Narrador" hint="Vem do canal; troque aqui só para este vídeo.">
+                  <VoicePicker
+                    value={c.tts_voice}
+                    onChange={(v) =>
+                      setChoices((x) => (x ? { ...x, tts_voice: v?.id ?? null, tts_voice_name: v?.name ?? null } : x))
+                    }
+                  />
+                  {!c.tts_voice && (
+                    <p className="flex items-center gap-1.5 text-xs text-amber-300">
+                      <AlertTriangle className="size-3.5" /> Selecione um narrador.
+                    </p>
+                  )}
+                </Field>
+              )}
+              {audioMode === "upload" && (
+                <div className="flex items-center gap-3">
+                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted">
+                    <Upload className="size-4" /> Escolher arquivo
+                    <input
+                      type="file"
+                      accept=".mp3,.wav,.m4a,audio/*"
+                      className="hidden"
+                      onChange={(e) => pickAudio(e.target.files?.[0] ?? null)}
+                    />
+                  </label>
+                  <span className="truncate text-xs text-muted-foreground">
+                    {audioFile ? `${audioFile.name} · ${fmtDuration(audioSeconds)}` : "nenhum arquivo"}
+                  </span>
+                </div>
+              )}
+            </>
+          )}
+
+          {step === 1 && c && (
+            <>
+              <Field label="Estilo de direção">
+                <div className="grid gap-3 sm:grid-cols-3">
+                  {directions.map((d) => (
+                    <button
+                      key={d.id}
+                      onClick={() => set("direction", d.id)}
+                      className={cn(
+                        "overflow-hidden rounded-md border text-left transition-colors hover:border-foreground/40",
+                        c.direction === d.id && "border-foreground ring-1 ring-foreground",
+                      )}
+                    >
+                      {d.image && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={api.directionImage(d.id)} alt="" className="aspect-video w-full object-cover" />
+                      )}
+                      <div className="p-3">
+                        <p className="text-sm font-medium">{d.name}</p>
+                        <p className="text-xs text-muted-foreground">{d.description}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </Field>
+              <Field
+                label="Estilo visual"
+                hint="Texto livre, usado nas buscas, na geração de imagens e no ranqueamento dos clipes."
+              >
+                <Textarea
+                  value={c.visual_style}
+                  onChange={(e) => set("visual_style", e.target.value)}
+                  placeholder="noturno, granulado, tons frios"
+                  rows={3}
+                />
+              </Field>
+              <Field
+                label="Representação de época"
+                hint={`Vale para roteiros que se passam no passado: ${
+                  PERIOD_LOOKS.find((m) => m.value === c.period_look)?.hint
+                }.`}
+              >
+                <SimpleSelect
+                  value={c.period_look}
+                  onChange={(v) => set("period_look", v as PeriodLook)}
+                  options={PERIOD_LOOKS}
+                  className="sm:w-80"
+                />
+              </Field>
+              <Field label="Idioma das buscas" hint="Os bancos de vídeo respondem melhor em inglês.">
+                <SimpleSelect
+                  value={c.search_language}
+                  onChange={(v) => set("search_language", v)}
+                  options={LANGS}
+                  className="sm:w-64"
+                />
               </Field>
             </>
           )}
 
-          {step === 1 && comp && (
-            <div className="grid gap-3 sm:grid-cols-3">
-              {directions.map((d) => (
-                <button
-                  key={d.id}
-                  onClick={() => setC("direction", d.id)}
-                  className={cn(
-                    "overflow-hidden rounded-lg border text-left transition-colors hover:border-foreground/40",
-                    comp.direction === d.id && "border-foreground ring-1 ring-foreground",
-                  )}
-                >
-                  {d.image && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={api.directionImage(d.id)} alt="" className="aspect-video w-full object-cover" />
-                  )}
-                  <div className="p-3">
-                    <p className="text-sm font-medium">{d.name}</p>
-                    <p className="text-xs text-muted-foreground">{d.description}</p>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-
-          {step === 2 && comp && preview && (
+          {step === 2 && c && preview && (
             <>
-              <SplitSlider left="Real" right="IA" value={comp.real_pct} onChange={(v) => setC("real_pct", v)} />
+              <SplitSlider left="Real" right="IA" value={c.real_pct} onChange={(v) => set("real_pct", v)} />
+              <Field
+                label="Estilo de mídia aceito"
+                hint={MEDIA_STYLES.find((m) => m.value === c.media_style)?.hint}
+              >
+                <SimpleSelect
+                  value={c.media_style}
+                  onChange={(v) => set("media_style", v as MediaStyle)}
+                  options={MEDIA_STYLES}
+                  className="sm:w-64"
+                />
+              </Field>
               <Field label="Tipo de mídia de IA">
                 <SimpleSelect
-                  value={comp.ai_media}
-                  onChange={(v) => setC("ai_media", v as Composition["ai_media"])}
+                  value={c.ai_media}
+                  onChange={(v) => set("ai_media", v as Choices["ai_media"])}
                   options={AI_MEDIA}
-                  disabled={comp.real_pct === 100}
+                  disabled={c.real_pct === 100}
+                  className="sm:w-64"
                 />
               </Field>
               <SplitSlider
                 left="YouTube"
                 right="Bancos"
-                value={comp.youtube_pct}
-                onChange={(v) => setC("youtube_pct", v)}
-                disabled={comp.real_pct === 0}
+                value={c.youtube_pct}
+                onChange={(v) => set("youtube_pct", v)}
+                disabled={c.real_pct === 0}
               />
               <Field label="Duração média por cena (s)" hint="Entre 2 e 20 s; a direção varia em torno dessa média.">
                 <Input
@@ -273,51 +383,82 @@ export default function CriacaoPage() {
                   min={2}
                   max={20}
                   step={0.5}
-                  value={comp.avg_scene_seconds}
-                  onChange={(e) => setC("avg_scene_seconds", Number(e.target.value))}
+                  value={c.avg_scene_seconds}
+                  onChange={(e) => set("avg_scene_seconds", Number(e.target.value))}
                   className="w-32"
+                />
+              </Field>
+              <Field label="Modo de seleção" hint={SELECTION_MODES.find((m) => m.value === c.selection_mode)?.hint}>
+                <SimpleSelect
+                  value={c.selection_mode}
+                  onChange={(v) => set("selection_mode", v as SelectionMode)}
+                  options={SELECTION_MODES}
+                  className="sm:w-64"
                 />
               </Field>
               <div className="flex gap-8">
                 <label className="flex items-center gap-2 text-sm">
-                  <Switch checked={comp.subtitles} onCheckedChange={(v) => setC("subtitles", v)} /> Legendas
+                  <Switch checked={c.subtitles} onCheckedChange={(v) => set("subtitles", v)} /> Legendas
                 </label>
                 <label className="flex items-center gap-2 text-sm">
-                  <Switch checked={comp.music_enabled} onCheckedChange={(v) => setC("music_enabled", v)} /> Música de
+                  <Switch checked={c.music_enabled} onCheckedChange={(v) => set("music_enabled", v)} /> Música de
                   fundo
                 </label>
+                <label className="flex items-center gap-2 text-sm" title="Leve tratamento de cor uniforme nas cenas de época (ex.: tons quentes e dessaturados no século XIX)">
+                  <Switch checked={c.period_grade} onCheckedChange={(v) => set("period_grade", v)} /> Cor de época
+                </label>
+                <label className="flex items-center gap-2 text-sm" title="Card com lugar e data quando o roteiro muda de época ou de lugar, no idioma do vídeo">
+                  <Switch checked={c.context_cards} onCheckedChange={(v) => set("context_cards", v)} /> Card de
+                  lugar e data
+                </label>
               </div>
-              <pre className="rounded-lg bg-muted/60 p-4 font-mono text-sm leading-relaxed">
+              <pre className="rounded-md bg-muted/60 p-4 font-mono text-sm leading-relaxed">
                 {`Duração ≈ ${fmtDuration(duration)} · ≈ ${preview.scenes} cenas
 Real ${fmtDuration(preview.real)}  →  YouTube ${fmtDuration(preview.yt)} · Bancos ${fmtDuration(preview.stock)}
-IA   ${fmtDuration(preview.ai)}  →  ${AI_MEDIA.find((m) => m.value === comp.ai_media)?.label.toLowerCase()}`}
+IA   ${fmtDuration(preview.ai)}  →  ${aiLabel}`}
               </pre>
             </>
           )}
 
-          {step === 3 && comp && channel && (
-            <div className="flex flex-col gap-5 text-sm">
-              <dl className="grid grid-cols-[160px_1fr] gap-x-4 gap-y-1.5">
+          {step === 3 && c && channel && (
+            <div className="flex flex-col gap-6 text-sm">
+              <dl className="grid grid-cols-[180px_1fr] gap-x-4 gap-y-2">
                 <dt className="text-muted-foreground">Canal</dt>
                 <dd>{channel.name}</dd>
                 <dt className="text-muted-foreground">Título</dt>
                 <dd>{title}</dd>
                 <dt className="text-muted-foreground">Roteiro</dt>
-                <dd>{words} palavras</dd>
+                <dd>
+                  {words} palavras · {langLabel(c.language)}
+                </dd>
                 <dt className="text-muted-foreground">Áudio</dt>
-                <dd>{audioMode === "upload" ? audioFile?.name : `TTS · ${channel.preset.tts_voice}`}</dd>
+                <dd>{audioMode === "upload" ? audioFile?.name : `Narrador ${c.tts_voice_name ?? "—"}`}</dd>
                 <dt className="text-muted-foreground">Direção</dt>
-                <dd>{directions.find((d) => d.id === comp.direction)?.name}</dd>
+                <dd>{directions.find((d) => d.id === c.direction)?.name}</dd>
+                <dt className="text-muted-foreground">Estilo visual</dt>
+                <dd>{c.visual_style || "—"}</dd>
+                <dt className="text-muted-foreground">Buscas</dt>
+                <dd>{langLabel(c.search_language)}</dd>
                 <dt className="text-muted-foreground">Composição</dt>
                 <dd>
-                  Real {comp.real_pct}% (YouTube {comp.youtube_pct}% / Bancos {100 - comp.youtube_pct}%) · IA{" "}
-                  {100 - comp.real_pct}% ({AI_MEDIA.find((m) => m.value === comp.ai_media)?.label.toLowerCase()})
+                  Real {c.real_pct}% (YouTube {c.youtube_pct}% / Bancos {100 - c.youtube_pct}%) · IA {100 - c.real_pct}%
+                  ({aiLabel})
+                </dd>
+                <dt className="text-muted-foreground">Estilo e seleção</dt>
+                <dd>
+                  {MEDIA_STYLES.find((m) => m.value === c.media_style)?.label} ·{" "}
+                  {SELECTION_MODES.find((m) => m.value === c.selection_mode)?.label}
                 </dd>
                 <dt className="text-muted-foreground">Ritmo</dt>
-                <dd>{comp.avg_scene_seconds}s por cena</dd>
+                <dd>{c.avg_scene_seconds}s por cena</dd>
                 <dt className="text-muted-foreground">Acabamento</dt>
                 <dd>
-                  Legendas {comp.subtitles ? "sim" : "não"} · Música {comp.music_enabled ? "sim" : "não"}
+                  Legendas {c.subtitles ? "sim" : "não"} · Música {c.music_enabled ? "sim" : "não"}
+                </dd>
+                <dt className="text-muted-foreground">Época</dt>
+                <dd>
+                  {PERIOD_LOOKS.find((m) => m.value === c.period_look)?.label} · Cor de época{" "}
+                  {c.period_grade ? "sim" : "não"} · Card de lugar e data {c.context_cards ? "sim" : "não"}
                 </dd>
               </dl>
 
@@ -325,7 +466,7 @@ IA   ${fmtDuration(preview.ai)}  →  ${AI_MEDIA.find((m) => m.value === comp.ai
                 <p className="text-muted-foreground">Calculando estimativa…</p>
               ) : (
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="rounded-lg border p-4">
+                  <div className="rounded-md border p-4">
                     <p className="mb-2 font-medium">Custo e tempo estimados</p>
                     <dl className="grid grid-cols-2 gap-y-1 text-muted-foreground">
                       <dt>TTS</dt>
@@ -342,7 +483,7 @@ IA   ${fmtDuration(preview.ai)}  →  ${AI_MEDIA.find((m) => m.value === comp.ai
                       <dd className="text-right">≈ {estimate.time_minutes} min</dd>
                     </dl>
                   </div>
-                  <div className="rounded-lg border p-4">
+                  <div className="rounded-md border p-4">
                     <p className="mb-2 font-medium">Uso de cotas</p>
                     <dl className="grid grid-cols-2 gap-y-1 text-muted-foreground">
                       <dt>Imagens Darkvi</dt>
@@ -350,11 +491,24 @@ IA   ${fmtDuration(preview.ai)}  →  ${AI_MEDIA.find((m) => m.value === comp.ai
                         {estimate.quotas.darkvi_images_needed} /{" "}
                         {estimate.quotas.darkvi_remaining ?? "saldo desconhecido"}
                       </dd>
-                      <dt>YouTube Data API</dt>
-                      <dd className="text-right">
-                        {estimate.quotas.youtube_units_needed} / {estimate.quotas.youtube_daily_quota} un.
+                      <dt>Cenas do YouTube</dt>
+                      <dd
+                        className={cn(
+                          "text-right",
+                          estimate.quotas.youtube_scenes_fit < estimate.quotas.youtube_scenes && "text-amber-300",
+                        )}
+                      >
+                        {estimate.quotas.youtube_scenes_fit} de {estimate.quotas.youtube_scenes} cabem hoje
                       </dd>
+                      <dt>Cota YouTube restante</dt>
+                      <dd className="text-right">{estimate.quotas.youtube_available} un.</dd>
                     </dl>
+                    {estimate.quotas.youtube_scenes_fit < estimate.quotas.youtube_scenes && (
+                      <p className="mt-2 text-xs text-amber-300">
+                        A cota do YouTube de hoje cobre {estimate.quotas.youtube_scenes_fit} de{" "}
+                        {estimate.quotas.youtube_scenes} cenas. As restantes usarão bancos de vídeo.
+                      </p>
+                    )}
                     {!estimate.quotas.darkvi_enough && (
                       <p className="mt-2 text-xs text-amber-300">
                         O saldo de imagens de hoje não cobre esta produção; as cenas excedentes vão para os bancos.
@@ -363,21 +517,46 @@ IA   ${fmtDuration(preview.ai)}  →  ${AI_MEDIA.find((m) => m.value === comp.ai
                   </div>
                 </div>
               )}
+
+              <label className="flex items-start gap-3 rounded-md border p-4">
+                <Switch
+                  checked={c.llm_economy}
+                  onCheckedChange={(v) => set("llm_economy", v)}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="font-medium">Econômico (sem pressa)</span>
+                  <span className="block text-xs text-muted-foreground">
+                    O planejamento vai pela Batch API do Claude: metade do preço, mas a produção fica “Aguardando
+                    IA” por até 24 h (normalmente menos de 1 h). Bom para enfileirar à noite.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 rounded-md border p-4">
+                <Switch checked={saveDefault} onCheckedChange={setSaveDefault} className="mt-0.5" />
+                <span>
+                  <span className="font-medium">Salvar estas configurações como padrão do canal {channel.name}</span>
+                  <span className="block text-xs text-muted-foreground">
+                    Idiomas, narrador, direção, estilo visual, composição, ritmo e representação de época vêm
+                    preenchidos assim nos próximos vídeos deste canal.
+                  </span>
+                </span>
+              </label>
             </div>
           )}
         </CardContent>
       </Card>
 
-      <div className="mt-5 flex justify-between">
-        <Button variant="outline" onClick={() => setStep((s) => s - 1)} disabled={step === 0}>
+      <div className="mt-6 flex justify-between">
+        <Button variant="outline" size="lg" onClick={() => setStep((s) => s - 1)} disabled={step === 0}>
           <ArrowLeft /> Voltar
         </Button>
         {step < 3 ? (
-          <Button onClick={goNext} disabled={!valid[step]}>
+          <Button size="lg" onClick={goNext} disabled={!valid[step]}>
             Próximo <ArrowRight />
           </Button>
         ) : (
-          <Button onClick={submit} disabled={submitting}>
+          <Button size="lg" onClick={submit} disabled={submitting}>
             <Play /> {submitting ? "Enviando…" : "Iniciar produção"}
           </Button>
         )}

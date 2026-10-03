@@ -10,17 +10,21 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session, delete, select
 
-from ..config import job_dir
+from ..config import job_dir, load_settings
 from ..db import get_session, session_scope
 from ..estimate import estimate
-from ..models import Channel, Issue, Preset, Production, ProductionConfig, ProductionStep, now
+from ..lang import resolve_video_language
+from ..pipeline.report import build_report
+from ..models import CREATION_FIELDS, Channel, Issue, Preset, Production, ProductionConfig, ProductionStep, now
 
 router = APIRouter(tags=["productions"])
 
 AUDIO_EXT = {"mp3", "wav", "m4a"}
+SSE_LIFETIME = 25
 
 
-def _card(p: Production, channel_name: str | None, issues: list[Issue]) -> dict[str, Any]:
+def _card(p: Production, channel_name: str | None, issues: list[Issue],
+          steps: list[ProductionStep] | None = None) -> dict[str, Any]:
     counts: dict[str, int] = {}
     for i in issues:
         counts[i.severity] = counts.get(i.severity, 0) + 1
@@ -33,9 +37,28 @@ def _card(p: Production, channel_name: str | None, issues: list[Issue]) -> dict[
         "created_at": p.created_at, "started_at": p.started_at, "finished_at": p.finished_at,
         "updated_at": p.updated_at, "ai_content": cfg.get("real_pct", 100) < 100,
         "issue_counts": counts,
+        "llm_usage": _llm_summary(p.id),
+        "step_seconds": {s.step: round((_aware(s.finished_at) - _aware(s.started_at)).total_seconds(), 1)
+                         for s in steps or [] if s.started_at and s.finished_at and s.status == "done"},
         "issues": [{"id": i.id, "code": i.code, "severity": i.severity, "scene": i.scene, "message": i.message,
                     "detail": i.detail, "created_at": i.created_at} for i in issues],
     }
+
+
+def _llm_summary(production_id: int | None) -> dict | None:
+    path = job_dir(production_id) / "llm_usage.json" if production_id else None
+    if not path or not path.exists():
+        return None
+    try:
+        summary = json.loads(path.read_text(encoding="utf-8")).get("summary")
+    except (OSError, ValueError):
+        return None
+    if not summary:
+        return None
+    tokens = sum(summary.get(k, 0) for k in ("input_tokens", "output_tokens", "cache_read_input_tokens",
+                                             "cache_creation_input_tokens"))
+    return {"cost": summary.get("cost"), "tokens": tokens, "top_task": summary.get("top_task"),
+            "cache_read": summary.get("cache_read_input_tokens", 0), "calls": summary.get("calls", 0)}
 
 
 def _cards(s: Session, productions: list[Production]) -> list[dict]:
@@ -46,7 +69,11 @@ def _cards(s: Session, productions: list[Production]) -> list[dict]:
     issues: dict[int, list[Issue]] = {}
     for i in s.exec(select(Issue).where(Issue.production_id.in_(ids)).order_by(Issue.id)):
         issues.setdefault(i.production_id, []).append(i)
-    return [_card(p, channels.get(p.channel_id), issues.get(p.id, [])) for p in productions]  # type: ignore[arg-type]
+    steps: dict[int, list[ProductionStep]] = {}
+    for st in s.exec(select(ProductionStep).where(ProductionStep.production_id.in_(ids))):
+        steps.setdefault(st.production_id, []).append(st)
+    return [_card(p, channels.get(p.channel_id), issues.get(p.id, []), steps.get(p.id))  # type: ignore[arg-type]
+            for p in productions]
 
 
 @router.get("/productions")
@@ -56,12 +83,18 @@ def list_productions(s: Session = Depends(get_session)):
 
 @router.get("/productions/events")
 async def production_events(request: Request):
-    """SSE: snapshot inicial e depois cada produção alterada (o worker grava no SQLite)."""
+    """SSE: snapshot inicial e depois cada produção alterada (o worker grava no SQLite).
+
+    Cada conexão dura no máximo SSE_LIFETIME segundos e o navegador reconecta sozinho. Uma conexão
+    infinita impede o uvicorn de reiniciar (--reload) e de desligar.
+    """
 
     async def stream():
         last = datetime.min.replace(tzinfo=timezone.utc)
         first = True
-        while not await request.is_disconnected():
+        deadline = asyncio.get_running_loop().time() + SSE_LIFETIME
+        yield "retry: 1500\n\n"
+        while not await request.is_disconnected() and asyncio.get_running_loop().time() < deadline:
             with session_scope() as s:
                 q = select(Production).order_by(Production.created_at.desc())
                 rows = list(s.exec(q))
@@ -115,24 +148,44 @@ async def create_production(
     title: str = Form(...),
     script: str = Form(...),
     config: str = Form("{}"),
+    save_as_default: bool = Form(False),
     audio: UploadFile | None = File(None),
     s: Session = Depends(get_session),
 ):
     if not script.strip():
         raise HTTPException(400, "Roteiro vazio")
+    from ..whisper_models import model_ready
+
+    model = load_settings()["transcription"]["model"]
+    if not model_ready(model):  # app instalado: o modelo é baixado no assistente inicial / Configuração
+        raise HTTPException(409, f"Baixe o modelo de transcrição '{model}' antes de criar produções "
+                                 "(Configuração → Transcrição)")
     audio_mode = "upload" if audio and audio.filename else "tts"
     if audio_mode == "upload":
         ext = audio.filename.rsplit(".", 1)[-1].lower()  # type: ignore[union-attr]
         if ext not in AUDIO_EXT:
             raise HTTPException(400, "Envie um arquivo mp3, wav ou m4a")
     cfg = _build_config(s, channel_id, title, json.loads(config or "{}"), audio_mode)
+    cfg.video_language, diverged = resolve_video_language(cfg.language, script)
     if audio_mode == "tts" and not cfg.tts_voice:
-        raise HTTPException(400, "Sem áudio enviado e o canal não tem voz TTS definida")
+        raise HTTPException(400, "Sem áudio enviado e nenhum narrador selecionado")
+    if save_as_default:
+        ch = s.get(Channel, channel_id)
+        assert ch
+        chosen = cfg.model_dump()
+        ch.preset = {**ch.preset, **{k: chosen[k] for k in CREATION_FIELDS},
+                     "music": {**ch.preset.get("music", {}), "enabled": cfg.music.enabled}}
+        s.add(ch)
     p = Production(channel_id=channel_id, title=title, script=script, config=cfg.model_dump(), status="queued",
                    step_label="Na fila", cost_estimated=estimate(cfg, script)["cost"]["total"])
     s.add(p)
     s.commit()
     s.refresh(p)
+    if diverged:
+        s.add(Issue(production_id=p.id, code="LANGUAGE_MISMATCH", severity="warning",  # type: ignore[arg-type]
+                    message=f"O roteiro está em '{diverged}', mas a produção foi configurada em '{cfg.language}'. "
+                            f"Narração, legendas e textos na tela seguirão o roteiro ({diverged}).",))
+        s.commit()
     if audio_mode == "upload":
         dest = job_dir(p.id) / "input" / f"narration.{ext}"  # type: ignore[arg-type]
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -193,6 +246,22 @@ def delete_production(production_id: int, s: Session = Depends(get_session)):
     s.delete(p)
     s.commit()
     return {"ok": True}
+
+
+@router.get("/productions/{production_id}/direction")
+def production_direction(production_id: int, s: Session = Depends(get_session)):
+    """Relatório de direção montado na hora a partir dos arquivos da produção."""
+    p = s.get(Production, production_id)
+    if not p:
+        raise HTTPException(404, "Produção não encontrada")
+    issues = [i.model_dump() for i in s.exec(select(Issue).where(Issue.production_id == production_id))]
+    cfg = ProductionConfig.model_validate(p.config)
+    report = build_report(job_dir(production_id), {"id": p.id, "title": p.title, "channel_name": cfg.channel_name,
+                                                  "created_at": str(p.created_at), "drive_url": p.drive_url},
+                          cfg, issues)
+    if report is None:
+        raise HTTPException(404, "A produção ainda não chegou ao planejamento de cenas")
+    return report
 
 
 class EstimateIn(BaseModel):
