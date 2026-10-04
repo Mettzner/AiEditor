@@ -10,7 +10,7 @@ import threading
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Iterable, Sequence
 
 from ...config import load_settings
 
@@ -164,6 +164,29 @@ def run(args: Sequence[str], cwd: Path | None = None, on_progress: Callable[[flo
         stderr = err.read()
     if code != 0:
         raise FFmpegError(f"ffmpeg saiu com código {code}", stderr[-6000:])
+
+
+def encode_frames(frames: Iterable[bytes], size: tuple[int, int], fps: int, out: Path) -> None:
+    """Codifica quadros RGBA crus (PIL `tobytes()`) num vídeo com transparência sem perdas (FFV1 em .mkv)."""
+    cmd = [ffmpeg_bin(), "-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-f", "rawvideo",
+           "-pix_fmt", "rgba", "-s", f"{size[0]}x{size[1]}", "-r", str(fps), "-i", "pipe:0",
+           "-c:v", "ffv1", "-pix_fmt", "bgra", str(out)]
+    with tempfile.TemporaryFile(mode="w+b") as err:
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=err,
+                                creationflags=_CREATE_NO_WINDOW)
+        assert proc.stdin
+        try:
+            for frame in frames:
+                proc.stdin.write(frame)
+        except BrokenPipeError:
+            pass
+        finally:
+            proc.stdin.close()
+        code = proc.wait()
+        err.seek(0)
+        stderr = err.read().decode("utf-8", "replace")
+    if code != 0:
+        raise FFmpegError(f"ffmpeg saiu com código {code} ao codificar overlay", stderr[-6000:])
 
 
 def probe(path: Path) -> dict:
