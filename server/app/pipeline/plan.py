@@ -24,8 +24,8 @@ from ..lang import name as lang_name
 from ..providers.llm.base import call_llm
 from ..worker.context import JobContext
 from .allocate import allocate
-from .context import (ContextBible, block_by_id, block_for_unit, finish_bible, neutral_bible, period_allowed_styles,
-                      scene_context, strategy_order)
+from .context import (ContextBible, beat_for_unit, block_by_id, block_for_unit, finish_bible, neutral_bible,
+                      period_allowed_styles, scene_context, strategy_order, video_look)
 from .visual import (MEDIA_STYLE_RULES, NUMBER_HINTS, PLAN_SYSTEM, Style, StyleAllowance, brief_section,
                      sanitize_free_query, sanitize_queries, scene_style)
 
@@ -83,6 +83,9 @@ class SceneDraft(BaseModel):
 
     first_unit: int
     last_unit: int
+    # interpretação: o que este momento transmite na história e quem (das entidades recorrentes) aparece
+    meaning: str
+    entities: list[str]
     literal: bool
     subject: str
     subject_category: Literal["food", "plant", "person", "animal", "object", "place", "activity", "nature",
@@ -132,7 +135,8 @@ def _fallback_window(units: list[dict], avg: float, lang: str) -> PlanWindow:
         text = " ".join(u["text"] for u in units[start:end + 1])
         kw = " ".join(re.findall(r"[A-Za-zÀ-ÿ]{5,}", text)[:2]).lower() or "landscape"
         scenes.append(SceneDraft(
-            first_unit=units[start]["i"], last_unit=units[end]["i"], literal=True, subject=kw,
+            first_unit=units[start]["i"], last_unit=units[end]["i"], meaning=text[:160], entities=[], literal=True,
+            subject=kw,
             subject_category="other", must_show=[kw], setting="", action="", shot="medium", mood="",
             must_avoid=[], style_allowance="real_only", allowed_styles=["real_footage"],
             style_reason="fallback automático", visual_intent=text[:200], queries=[kw, f"{kw} close up", f"{kw} outdoor"],
@@ -223,15 +227,16 @@ def write_bible(ctx: JobContext, context: str, units: list[dict], economy: bool 
         try:
             if economy:
                 ctx.progress(0.05, "Aguardando IA (lote econômico, até 24 h)")
-            parsed, usage = call_llm("plan", system=PLAN_SYSTEM, context=context, user=user, schema=ContextBible,
-                                     max_tokens=8000, batch=economy)
+            # etapa própria ("bible"): a interpretação do roteiro inteiro merece mais raciocínio que as cenas
+            parsed, usage = call_llm("bible", system=PLAN_SYSTEM, context=context, user=user, schema=ContextBible,
+                                     max_tokens=16000, batch=economy)
             ctx.record_llm(usage)
             return finish_bible(parsed.model_dump(), len(units), units)
         except Exception as e:  # noqa: BLE001
             if attempt == 1:
                 ctx.issue("STEP_FAILED", "Bíblia de Contexto falhou; usando um contexto atemporal neutro",
                           detail=repr(e), severity="warning")
-    return neutral_bible(ctx.config.title, ctx.config.visual_style, len(units))
+    return neutral_bible(ctx.config.title, "", len(units))
 
 
 def plan_context(ctx: JobContext, units: list[dict]) -> str:
@@ -249,7 +254,7 @@ def plan_context(ctx: JobContext, units: list[dict]) -> str:
         f"- Target average scene duration: {ctx.config.avg_scene_seconds:.1f}s, varying ±{var:.0%}.",
         f"- Video language: {lang_name(lang)} ({lang}). Number format: {NUMBER_HINTS.get(lang, '').strip()}",
         f"- Channel media style: {MEDIA_STYLE_RULES.get(ctx.config.media_style, MEDIA_STYLE_RULES['real_preferred'])}",
-        f"- Channel visual style: {ctx.config.visual_style or '(none)'}",
+        "- Visual style and period look: decided by the CONTEXT BIBLE from the script itself.",
         "- Direction:",
         direction.prompt.strip(),
     ])
@@ -313,11 +318,16 @@ def run(ctx: JobContext) -> str:
         start = 0.0 if n == 0 else round((prev_end + u0["start"]) / 2, 3)  # corta no meio da pausa
         block = block_by_id(bible, d.context_id) or block_for_unit(bible, d.first_unit)
         context = scene_context(block)
+        beat = beat_for_unit(bible, d.first_unit) or {}
+        known = {(e.get("name") or "").lower(): e["name"] for e in bible.get("recurring_entities") or []
+                 if e.get("name")}
         scene = {
             "id": f"s{n + 1:03d}", "start": start, "end": None,
             "text": " ".join(u["text"] for u in units[d.first_unit:d.last_unit + 1]),
             **d.model_dump(exclude={"first_unit", "last_unit"}),
             "units": [d.first_unit, d.last_unit], "speech_end": u1["end"],
+            "entities": [known[n.lower()] for n in d.entities if n.lower() in known],
+            "beat": beat.get("beat", ""), "beat_emotion": beat.get("emotion", ""),
             "context_id": context.get("id", ""), "context": context,
             # must_avoid efetivo = confusões da cena + anacronismos do bloco (as queries usam só as confusões)
             "anachronisms": list(context.get("anachronisms") or []),
@@ -336,7 +346,9 @@ def run(ctx: JobContext) -> str:
     allocation = allocate(scenes, ctx.config)
     for s in scenes:
         s["source"] = allocation[s["id"]]
+    visual_style, period_look = video_look(bible, ctx.config)
     out = ctx.write_json("plan.json", {"music_mood": mood or ctx.config.music.mood, "video_language": lang,
-                                       "scenes": scenes})
+                                       "visual_style": visual_style, "period_look": period_look,
+                                       "summary": bible.get("summary", ""), "scenes": scenes})
     ctx.progress(1.0, f"{len(scenes)} cenas planejadas")
     return str(out)

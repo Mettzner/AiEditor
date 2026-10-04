@@ -39,7 +39,8 @@ def scene_context(scene: dict, brief: dict | None, style: str, previous: str = "
         subject=scene.get("subject", ""), must_show=scene.get("must_show") or [],
         must_avoid=list(scene.get("must_avoid") or []) + scene_anachronisms(scene) + list(brief.get("global_avoid") or []),
         topic=brief.get("topic", ""), visual_world=brief.get("visual_world", ""), allowance=allowance,
-        allowed_styles=allowed, style_reason=scene.get("style_reason", ""), context=scene.get("context") or {})
+        allowed_styles=allowed, style_reason=scene.get("style_reason", ""), context=scene.get("context") or {},
+        meaning=scene.get("meaning", ""), beat=scene.get("beat", ""))
 
 
 def generate_validated(scene: dict, brief: dict | None, style: str, dest: Path, cfg: dict, stats: dict,

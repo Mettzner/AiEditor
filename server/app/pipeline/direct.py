@@ -14,7 +14,8 @@ from ..providers import sfx as sfx_library
 from ..providers.music import library
 from ..worker.context import JobContext
 from .allocate import YOUTUBE_IMPLEMENTED, composition, targets
-from .context import grade_for
+from .context import grade_for, video_look
+from .plan import load_bible
 from .report import write_report, write_visual_report
 
 
@@ -160,6 +161,7 @@ def run(ctx: JobContext) -> str:
     direction = get_direction(ctx.config.direction)
     params = direction.params
     cfg = ctx.config
+    _, period_look = video_look(load_bible(ctx.dir), cfg)
 
     # Cenas sem asset são absorvidas pela vizinha (a anterior se estende).
     merged: list[dict] = []
@@ -239,7 +241,7 @@ def run(ctx: JobContext) -> str:
             if m:
                 scene["motion"] = {"type": "push", "from": m["from"], "to": m["to"]}
         # gradação uniforme por bloco histórico: costura reconstituição, pintura e IA numa mesma atmosfera (§8)
-        grade = grade_for(context.get("footage_feasibility"), cfg.period_look) if cfg.period_grade else None
+        grade = grade_for(context.get("footage_feasibility"), period_look) if cfg.period_grade else None
         if grade:
             scene["grade"] = grade
         scenes.append(scene)

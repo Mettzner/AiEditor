@@ -41,7 +41,7 @@ from ...providers.stock.archives import ARCHIVES
 from ...providers.youtube import client as youtube
 from ...providers.youtube import quota as yt_quota
 from ...worker.context import JobContext, StepError
-from ..context import HISTORICAL, STRATEGY_LABEL, is_historical, scene_anachronisms, strategy_order
+from ..context import HISTORICAL, STRATEGY_LABEL, is_historical, scene_anachronisms, strategy_order, video_look
 from ..plan import load_bible
 from ..timing import Timings
 from ..visual import (REWRITE_SYSTEM, QueryRewriteBatch, compact_json, image_type_for, sanitize_queries, scene_style,
@@ -117,7 +117,8 @@ class Selector:
         self.brief: dict = load_bible(ctx.dir)  # Bíblia de Contexto (superconjunto do antigo brief)
         cfg = ctx.config
         self.media_style = getattr(cfg, "media_style", "real_preferred")
-        self.period_look = getattr(cfg, "period_look", "cinematic")
+        # estilo visual e representação de época vêm da bíblia (interpretados do roteiro), não da tela
+        self.visual_style, self.period_look = video_look(self.brief, cfg)
         archives = ctx.settings.get("archives") or {}
         self.archives_on = bool(archives.get("enabled", True))
         self.cfg["archive_min_photo_height"] = archives.get("min_photo_height", 500)
@@ -147,13 +148,13 @@ class Selector:
     def _scene_ctx(self, scene: dict, previous: str, must_avoid: list[str]) -> SceneContext:
         allowance, allowed = scene_style(scene, self.media_style)
         return SceneContext(
-            intent=scene.get("visual_intent", ""), text=scene["text"], style=self.ctx.config.visual_style,
+            intent=scene.get("visual_intent", ""), text=scene["text"], style=self.visual_style,
             previous=previous, subject=scene.get("subject", ""), must_show=scene.get("must_show") or [],
             must_avoid=list(dict.fromkeys(must_avoid + scene_anachronisms(scene)
                                           + list(self.brief.get("global_avoid") or []))),
             topic=self.brief.get("topic", ""), visual_world=self.brief.get("visual_world", ""),
             allowance=allowance, allowed_styles=allowed, style_reason=scene.get("style_reason", ""),
-            context=scene.get("context") or {})
+            context=scene.get("context") or {}, meaning=scene.get("meaning", ""), beat=scene.get("beat", ""))
 
     @staticmethod
     def _timeless_view(scene: dict) -> dict:
@@ -179,7 +180,7 @@ class Selector:
 
     # ---- busca por fonte ---------------------------------------------------------------------
     def _search(self, source: str, scene: dict, queries: list[str], stats: dict) -> list:
-        lang = self.ctx.config.search_language
+        lang = "en"  # bancos e YouTube respondem melhor em inglês; as queries são sempre escritas em inglês
         per_page = int(self.cfg["results_per_query"])
         _, allowed = scene_style(scene, self.media_style)
         if source == "youtube":
@@ -297,7 +298,7 @@ class Selector:
         dest = self.ctx.path("assets", f"{scene['id']}.png")
         try:
             with self.timer.track(scene["id"], "geração de imagem (Darkvi)"):
-                result = generate_validated(scene, self.brief, self.ctx.config.visual_style, dest, self.cfg, stats,
+                result = generate_validated(scene, self.brief, self.visual_style, dest, self.cfg, stats,
                                             reference_key=self.ctx.config.reference_key, media_style=self.media_style,
                                             period_look=self.period_look)
         except darkvi_images.QuotaExhausted:
@@ -461,7 +462,7 @@ class Selector:
         must_avoid = list(dict.fromkeys(must_avoid + scene_anachronisms(scene)))
         with self.timer.track(scene["id"], "busca (foto genérica)"):
             cands, _ = search_all(self.providers, [subject], int(self.cfg["results_per_query"]),
-                                  self.ctx.config.search_language, photos=True, stats=stats,
+                                  "en", photos=True, stats=stats,
                                   media_type=image_type_for(allowed))
         with self.lock:
             used = set(self.used)

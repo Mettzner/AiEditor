@@ -1,5 +1,8 @@
-"""Bíblia de Contexto (CONTEXTO_PROFUNDO_DO_ROTEIRO.md): quando, onde, com quem e em que ambiente cada trecho
-do roteiro acontece.
+"""Bíblia de Contexto (CONTEXTO_PROFUNDO_DO_ROTEIRO.md): o que o roteiro conta e quer transmitir, e quando, onde,
+com quem e em que ambiente cada trecho acontece.
+
+A bíblia também decide o que antes era escolhido na tela: o estilo visual do vídeo e a representação de época
+(reconstituição de cinema ou aparência de arquivo), sempre a partir do próprio roteiro.
 
 Gerada uma vez por produção, na mesma chamada que planeja a primeira janela de cenas (o prefixo em cache é o
 mesmo, então não há chamada extra). Toda cena herda o bloco de contexto em que está; buscas, prompts de imagem,
@@ -15,6 +18,7 @@ from pydantic import BaseModel
 SettingType = Literal["historical", "contemporary", "timeless"]
 Feasibility = Literal["pre_photo", "pre_film", "early_film", "historical_modern", "contemporary", "timeless"]
 Confidence = Literal["explicit", "inferred", "none"]
+PeriodLook = Literal["cinematic", "archival"]
 
 HISTORICAL = ("pre_photo", "pre_film", "early_film", "historical_modern")
 DEFAULT_GLOBAL_AVOID = ["text on screen", "watermarks", "logos", "existing characters or franchises"]
@@ -57,22 +61,55 @@ class BibleEntity(BaseModel):
     contexts: list[str]
 
 
+class StoryBeat(BaseModel):
+    first_unit: int
+    last_unit: int
+    beat: str
+    emotion: str
+
+
 class ContextBible(BaseModel):
+    summary: str
+    intent: str
+    genre: str
     topic: str
     audience: str
     tone: str
     region_culture: str
     visual_world: str
+    visual_style: str
+    period_look: PeriodLook
+    story_beats: list[StoryBeat]
     contexts: list[ContextBlock]
     recurring_entities: list[BibleEntity]
     recurring_places: list[BibleEntity]
     global_avoid: list[str]
 
 
-BIBLE_RULES = """CONTEXT BIBLE, written once from the WHOLE script, before any scene, when the request asks for it. It says WHEN,
-WHERE, WITH WHOM and IN WHAT ENVIRONMENT each part of the script happens. Every image must be coherent with it.
+BIBLE_RULES = """CONTEXT BIBLE, written once from the WHOLE script, before any scene, when the request asks for it. It says WHAT
+the script tells and WANTS TO CONVEY, and WHEN, WHERE, WITH WHOM and IN WHAT ENVIRONMENT each part happens. Every
+image, clip and edit of the video comes from it, so read the whole script first and interpret it deeply: the
+story, the facts, what is implied but not said (who is speaking, where people are, the time of day, the weather,
+the social situation), the emotional arc and the message.
+- summary: 3 to 5 sentences telling what the script is about from beginning to end (characters, events, outcome).
+- intent: one or two sentences on what the script wants the viewer to understand or feel.
+- genre: a few words ("historical drama narrated as a tale", "true crime documentary", "science explainer",
+  "nature documentary", "biography", "mystery", "self-improvement").
 - topic (a few words), audience, tone (two or three adjectives), visual_world (kinds of places, objects and people
   that fit), region_culture (one line: place, culture and era).
+- visual_style: ONE English line with the visual treatment that best serves this script: palette, light, texture
+  and camera feel, deduced from genre, tone, era and place ("sun-bleached warm western palette, dusty air, hard
+  midday light, slow handheld documentary camera"; "cold desaturated night tones, wet streets, low-key light";
+  "bright natural daylight, clean macro detail, scientific clarity"). It applies to the whole video.
+- period_look, how past eras are represented when there is something historical: "cinematic" (photorealistic
+  period reenactment, like a high-budget period film) for narrated stories, dramatized history, legends and
+  anything told as a tale with characters and scenes; "archival" (authentic photographs and footage of the
+  time: daguerreotype, black and white, faded color) for factual documentaries about real events, real people
+  and real places, where authenticity matters more than drama. With no historical part, "cinematic".
+- story_beats: the narrative structure, as contiguous unit ranges (first_unit, last_unit) in order covering ALL
+  units, one beat roughly every 20 to 60 seconds of narration (a new event, revelation, shift of focus or
+  emotion). beat: one English sentence on what happens or is being conveyed in that stretch, including what is
+  implied (who, where, what is at stake); emotion: two or three words ("quiet dread", "hopeful relief").
 - contexts: split the script into context blocks by unit ranges (first_unit, last_unit): contiguous, in order,
   covering ALL units. Start a new block only when the era or the place really changes (1850 farmers → present-day
   scientists). Usually one block, rarely more than four. ids "ctx1", "ctx2"...
@@ -105,8 +142,10 @@ WHERE, WITH WHOM and IN WHAT ENVIRONMENT each part of the script happens. Every 
     "historical_modern" (~1940-2000), "contemporary", "timeless".
   * card_text: a short place-and-date card IN THE VIDEO LANGUAGE ("Rural Ireland, 1850" in English, "Irlanda
     rural, 1850" in Portuguese); "" for contemporary or timeless blocks without a meaningful place.
-- recurring_entities: people or things that appear in several scenes, each with a concrete look OF ITS ERA (age,
-  appearance, clothing) and the ids of the blocks where they appear. [] if none.
+- recurring_entities: people, animals or things that appear in several scenes (named characters, "the narrator's
+  grandmother", "the old ranch house"), each with a concrete, FIXED look OF ITS ERA so every image shows the same
+  one (age, build, face, hair, skin, clothing and its colors, distinctive details) and the ids of the blocks where
+  they appear. Infer a coherent look from the script when it does not describe one. [] if none.
 - recurring_places: places that repeat, each with a fixed description and block ids. [] if none.
 - global_avoid: text on screen, watermarks, logos, existing characters or franchises, plus likely confusions.
 - The script is the source of truth: infer only what is coherent with it and never contradict it. Be specific
@@ -177,9 +216,10 @@ def neutral_bible(title: str, visual_style: str, n_units: int) -> dict:
         lighting="natural light", transport="", objects=[], era_markers_to_show=[],
         anachronisms=["phones", "screens", "cars", "plastic packaging"], search_vocabulary=[], palette="", mood="",
         footage_feasibility="timeless", card_text="")
-    bible = ContextBible(topic=title, audience="general audience", tone="informative",
-                         region_culture="everyday neutral setting", visual_world=visual_style or "real life",
-                         contexts=[block], recurring_entities=[], recurring_places=[], global_avoid=[])
+    bible = ContextBible(summary="", intent="", genre="", topic=title, audience="general audience", tone="informative",
+                         region_culture="everyday neutral setting", visual_world="real life",
+                         visual_style=visual_style or "", period_look="cinematic", story_beats=[], contexts=[block],
+                         recurring_entities=[], recurring_places=[], global_avoid=[])
     return finish_bible(bible.model_dump(), n_units)
 
 
@@ -237,12 +277,53 @@ def finish_bible(raw: dict, n_units: int, units: list[dict] | None = None) -> di
             item["time"] = f"{units[b['first_unit']]['start']:.1f}-{units[b['last_unit']]['end']:.1f}s"
         timeline.append(item)
     contexts = {b["id"]: {k: v for k, v in b.items() if k not in ("id", "first_unit", "last_unit")} for b in fixed}
-    out = {k: raw.get(k, "") for k in ("topic", "audience", "tone", "region_culture", "visual_world")}
-    out.update(context_timeline=timeline, contexts=contexts,
+    out = {k: raw.get(k, "") for k in ("summary", "intent", "genre", "topic", "audience", "tone", "region_culture",
+                                       "visual_world", "visual_style")}
+    out["period_look"] = raw.get("period_look") if raw.get("period_look") in ("cinematic", "archival") else "cinematic"
+    out.update(story_beats=_fix_ranges(list(raw.get("story_beats") or []), n_units),
+               context_timeline=timeline, contexts=contexts,
                recurring_entities=list(raw.get("recurring_entities") or []),
                recurring_places=list(raw.get("recurring_places") or []),
                global_avoid=list(dict.fromkeys(DEFAULT_GLOBAL_AVOID + list(raw.get("global_avoid") or []))))
     return out
+
+
+def _fix_ranges(items: list[dict], n_units: int) -> list[dict]:
+    """Faixas de unidades contíguas e em ordem, cobrindo todas as unidades (lacunas fecham na faixa anterior)."""
+    items = sorted((dict(i) for i in items if isinstance(i, dict)), key=lambda i: i.get("first_unit", 0))
+    last = max(0, n_units - 1)
+    out, expected = [], 0
+    for it in items:
+        if int(it.get("last_unit", 0)) < expected:
+            continue
+        it["first_unit"] = expected
+        it["last_unit"] = min(int(it["last_unit"]), last)
+        out.append(it)
+        expected = it["last_unit"] + 1
+        if expected > last:
+            break
+    if out:
+        out[-1]["last_unit"] = last
+    return out
+
+
+def beat_for_unit(bible: dict, unit: int) -> dict | None:
+    """Trecho da estrutura narrativa (story_beats) que contém a unidade."""
+    for b in bible.get("story_beats") or []:
+        if b["first_unit"] <= unit <= b["last_unit"]:
+            return b
+    return None
+
+
+def video_look(bible: dict | None, config=None) -> tuple[str, str]:
+    """(estilo visual, representação de época) do vídeo: decididos pela bíblia a partir do roteiro. A config só
+    vale para produções antigas, cuja bíblia não tem esses campos."""
+    bible = bible or {}
+    style = (bible.get("visual_style") or "").strip() or (getattr(config, "visual_style", "") or "")
+    look = bible.get("period_look")
+    if look not in ("cinematic", "archival"):
+        look = getattr(config, "period_look", "cinematic") or "cinematic"
+    return style, look
 
 
 def blocks(bible: dict) -> list[dict]:

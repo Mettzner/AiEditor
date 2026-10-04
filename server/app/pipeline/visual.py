@@ -43,6 +43,10 @@ Every visual decision must follow the CONTEXT BIBLE (when, where, with whom and 
 happens) and the principles below.
 
 PRINCIPLES
+0. Interpret before you illustrate. Each scene shows what the script MEANS at that moment, inside the story the
+   CONTEXT BIBLE describes (summary, intent, story_beats, characters, era and place), not just the nouns of the
+   sentence. Ask: who is this about, where are they, what is happening, what is implied, what should the viewer
+   feel? "He knew it was the last time" shows the person and the moment, not a calendar or a clock.
 1. The subject rules. Every scene has one main subject (a concrete noun) that must be clearly visible.
    Adjectives and context refine it but never replace it.
 2. Use the whole script as context: the video topic, the audience, the era, the place, the culture and the
@@ -77,6 +81,11 @@ SCENE RULES
 - Each scene is a contiguous range of units [first_unit, last_unit]. Scenes cover ALL units of the window,
   in order, with no gaps or overlaps. Never split a unit; a scene may have a single unit.
 - Target average scene duration and its variation: given in PRODUCTION SETTINGS.
+- meaning: one English sentence (at most 20 words) on what this moment conveys in the story, with the implied
+  who, where and why ("Alejandro, exhausted at his dry ranch, fears losing his last cattle"). Every other field of
+  the scene must serve it.
+- entities: names of recurring_entities from the bible that are VISIBLE in this shot (exact names), else [].
+  Their fixed look is applied automatically, so the same person looks the same in every scene.
 - literal: false when the sentence is figurative; then the subject represents the MEANING, not the words.
 - subject: ONE concrete noun with at most one modifier ("frozen strawberries", "frightened man", "human
   cell"). Never a concept ("health", "freshness") or a lone adjective.
@@ -141,7 +150,7 @@ units the way that language does (hint in PRODUCTION SETTINGS). Set overlay_lang
 on every scene.
 
 THE CONTEXT YOU RECEIVE
-- PRODUCTION SETTINGS: scene duration, video language, channel media style, channel visual style, direction.
+- PRODUCTION SETTINGS: scene duration, video language, channel media style, direction.
 - SCRIPT UNITS: the whole narration as numbered units "[i|start-end] text" (times in seconds).
 - The request either asks you to write ONLY the CONTEXT BIBLE, or gives the bible and names the units to plan.
 Never repeat the narration text or the timings in the output: scenes refer to units by number. Output only JSON.
@@ -384,15 +393,26 @@ def period_style_block(ctx: dict, period_look: str = "cinematic") -> tuple[str, 
 
 
 def _entity_for(scene: dict, brief: dict) -> str:
-    """Entidade recorrente citada na cena, com a mesma descrição dentro do mesmo contexto."""
-    text = (scene.get("visual_intent", "") + " " + scene.get("subject", "") + " " + scene.get("action", "")).lower()
-    ctx_id = (scene.get("context") or {}).get("id") or scene.get("context_id")
-    for e in brief.get("recurring_entities") or []:
-        name = (e.get("name") or "").lower()
-        contexts = e.get("contexts") or []
-        if name and name in text and (not contexts or not ctx_id or ctx_id in contexts):
-            return f"{e['name']}: {brief_text(e['look'], 130)}."
-    return ""
+    """Entidades recorrentes visíveis na cena, com a mesma descrição fixa em todo o vídeo. O planejamento diz quem
+    aparece (`entities`); cenas antigas, sem o campo, caem na busca do nome no texto da cena."""
+    entities = [e for e in brief.get("recurring_entities") or [] if e.get("name") and e.get("look")]
+    named = {n.lower() for n in scene.get("entities") or []}
+    if named:
+        found = [e for e in entities if e["name"].lower() in named]
+    else:
+        text = (scene.get("visual_intent", "") + " " + scene.get("subject", "") + " " + scene.get("action", "")).lower()
+        ctx_id = (scene.get("context") or {}).get("id") or scene.get("context_id")
+        found = [e for e in entities if e["name"].lower() in text
+                 and (not e.get("contexts") or not ctx_id or ctx_id in e["contexts"])][:1]
+    return " ".join(f"{e['name']}: {brief_text(e['look'], 130 if len(found) == 1 else 90)}." for e in found[:2])
+
+
+def _look_line(scene: dict, brief: dict) -> str:
+    """Tratamento visual do vídeo inteiro (decidido pela bíblia) + paleta do bloco de contexto."""
+    style = (brief.get("visual_style") or "").strip()
+    palette = ((scene.get("context") or {}).get("palette") or "").strip()
+    parts = [x for x in [brief_text(style, 140), brief_text(palette, 80)] if x]
+    return f"Look: {'; '.join(parts)}." if parts else ""
 
 
 def brief_text(text: str | None, limit: int = 90) -> str:
@@ -433,6 +453,7 @@ def build_period_prompt(scene: dict, brief: dict | None, extra_feedback: str | N
     lighting = f"lighting from {brief_text(ctx['lighting'], 60)}" if ctx.get("lighting") else ""
     objects = ", ".join((ctx.get("objects") or [])[:3])
     entity = _entity_for(scene, brief)
+    look = _look_line(scene, brief)
     if style == "real_footage":
         block, block_short = period_style_block(ctx, period_look)
         style_avoid = ["cartoon", "illustration", "3D render", "CGI"]
@@ -459,6 +480,8 @@ def build_period_prompt(scene: dict, brief: dict | None, extra_feedback: str | N
         if entity:
             parts.append(entity)
         parts.append(use_block)
+        if look and "look" in parts_on:
+            parts.append(look)
         if markers:
             parts.append("Must show: " + ", ".join(markers) + ".")
         if extra_feedback:
@@ -467,8 +490,8 @@ def build_period_prompt(scene: dict, brief: dict | None, extra_feedback: str | N
         return " ".join(p for p in parts if p)
 
     markers = markers[:5]
-    steps = [({"mood", "objects", "interiors"}, block), ({"objects", "interiors"}, block), ({"interiors"}, block),
-             (set(), block)]
+    steps = [({"mood", "objects", "interiors", "look"}, block), ({"objects", "interiors", "look"}, block),
+             ({"interiors", "look"}, block), ({"look"}, block), (set(), block)]
     for on, use in steps:
         prompt = assemble(on, use, ordered)
         if len(prompt) <= PROMPT_LIMIT:
@@ -519,6 +542,7 @@ def build_image_prompt(scene: dict, brief: dict | None, extra_feedback: str | No
     mood = scene.get("mood")
     world = "; ".join(x for x in [brief.get("region_culture"), brief.get("visual_world")] if x)
     entity = _entity_for(scene, brief)
+    look = _look_line(scene, brief)
     must_show = ", ".join(scene.get("must_show") or [])
     if style == "real_footage":
         style_block, style_short = CAMERA, CAMERA_SHORT
@@ -533,6 +557,8 @@ def build_image_prompt(scene: dict, brief: dict | None, extra_feedback: str | No
 
     def assemble(with_mood: bool, block: str, avoid_items: list[str]) -> str:
         parts = [head + (f", {mood}" if with_mood and mood else "") + ".", block]
+        if look and with_mood:
+            parts.append(look)
         if world:
             parts.append(f"Setting consistent with: {world}.")
         if entity:
@@ -592,7 +618,9 @@ class VisionSheet(BaseModel):
 VISION_PROMPT = """You are a strict photo editor choosing footage for a documentary.
 
 Video topic: "{topic}". Visual world: "{visual_world}".
+Story so far at this point: "{beat}"
 Scene narration: "{text}"
+What this moment conveys: "{meaning}"
 Main subject that MUST be clearly visible: "{subject}"
 Must show: {must_show}
 Must NOT show: {must_avoid}
@@ -611,7 +639,7 @@ For EACH row, first describe what is actually visible, then judge:
 - "brand_or_franchise": true if a recognizable character, brand, logo or commercial game appears
 - "subject_visible": true only if "{subject}" is clearly visible AND is the main focus
 - "forbidden_present": list any "Must NOT show" items you can see (empty if none)
-- "context_match": 0-10, how well it conveys the narration in this video's context
+- "context_match": 0-10, how well it conveys what this moment means in the story (not just the words)
 - "quality": 0-10 (focus, light, composition, no watermark/text/logos)
 - "best_frame": 0-based index of the best frame in the row
 - "era_consistent": true if clothing, buildings, objects and light fit the time period and place above

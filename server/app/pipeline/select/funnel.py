@@ -55,6 +55,8 @@ class SceneContext:
     allowed_styles: list[str] = field(default_factory=lambda: ["real_footage"])
     style_reason: str = ""
     context: dict = field(default_factory=dict)  # contexto do bloco (época, lugar, anacronismos)
+    meaning: str = ""  # o que o momento transmite na história (planejamento)
+    beat: str = ""  # trecho da estrutura narrativa em que a cena está (bíblia)
 
     @property
     def setting_type(self) -> str | None:
@@ -68,8 +70,9 @@ CONTEXT_KEY_FIELDS = ("setting_type", "era", "era_label", "place", "clothing", "
 
 def _cache_key(stage: str, cands: list[Candidate], ctx: SceneContext, model: str, frames: int) -> str:
     context = compact_json({k: ctx.context.get(k) for k in CONTEXT_KEY_FIELDS}) if ctx.context else ""
-    raw = "|".join([stage, "v4", str(frames), ",".join(c.key for c in cands), ctx.intent, ctx.subject,
-                    ",".join(ctx.must_avoid), ctx.allowance, ",".join(ctx.allowed_styles), ctx.style, model, context])
+    raw = "|".join([stage, "v5", str(frames), ",".join(c.key for c in cands), ctx.intent, ctx.subject,
+                    ",".join(ctx.must_avoid), ctx.allowance, ",".join(ctx.allowed_styles), ctx.style, model, context,
+                    ctx.meaning, ctx.beat])
     return hashlib.sha1(raw.encode()).hexdigest()
 
 
@@ -87,6 +90,7 @@ def _rate(stage: str, rows: list[list], cands: list[Candidate], ctx: SceneContex
     if result is None:
         prompt = VISION_PROMPT.format(
             topic=ctx.topic or "(unknown)", visual_world=ctx.visual_world or "(real life)", text=ctx.text,
+            meaning=ctx.meaning or ctx.intent, beat=ctx.beat or "(not available)",
             subject=ctx.subject or ctx.intent, must_show=json.dumps(ctx.must_show, ensure_ascii=False),
             must_avoid=json.dumps(ctx.must_avoid, ensure_ascii=False), intent=ctx.intent,
             allowed_styles=", ".join(ctx.allowed_styles), style_reason=ctx.style_reason or "-",

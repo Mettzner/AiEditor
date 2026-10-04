@@ -109,7 +109,8 @@ def draft(first: int, last: int, **kw) -> SceneDraft:
                 must_avoid=["tractor"], style_allowance="real_only", allowed_styles=["real_footage"],
                 style_reason="real people", visual_intent="farmer digging", kind="concreto", energy="baixa",
                 affinity=Affinity(stock=0.8, youtube=0.2, ai=0.5), ai_kind="image", chapter_break=False,
-                chapter_title=None, highlight=None, emphasis="none", quote=None, overlay_language="en", context_id="",
+                chapter_title=None, highlight=None, emphasis="none", quote=None, meaning="farmer at work",
+                entities=[], overlay_language="en", context_id="",
                 era_markers_to_show=["thatched roofs"], archival_query="", timeless_alternative="",
                 timeless_query="", queries=["1850 irish farmer field", "irish farmer digging", "irish farmer"])
     base.update(kw)

@@ -17,6 +17,7 @@ from ..models import Channel
 from ..providers.darkvi import images as darkvi_images
 from ..providers.darkvi.client import DarkviError
 from ..worker.context import JobContext
+from .context import video_look
 from .imagegen import generate_validated
 
 _ref_lock = threading.Lock()
@@ -60,7 +61,7 @@ def generate_scenes(ctx: JobContext, sel, scenes: list[dict],
         return {}
     ref = _reference_key(ctx)
     quota_hit = threading.Event()
-    style = ctx.config.visual_style
+    style, period_look = video_look(sel.brief, ctx.config)  # interpretados do roteiro pela bíblia
     results: dict[str, dict] = {}
     stats_all: list[dict] = []
     timer = getattr(sel, "timer", None)
@@ -86,12 +87,10 @@ def generate_scenes(ctx: JobContext, sel, scenes: list[dict],
             if timer:
                 with timer.track(scene["id"], "geração de imagem (Darkvi)"):
                     result = generate_validated(scene, sel.brief, style, dest, sel.cfg, stats, reference_key=ref,
-                                                media_style=ctx.config.media_style,
-                                                period_look=ctx.config.period_look)
+                                                media_style=ctx.config.media_style, period_look=period_look)
             else:
                 result = generate_validated(scene, sel.brief, style, dest, sel.cfg, stats, reference_key=ref,
-                                            media_style=ctx.config.media_style,
-                                            period_look=ctx.config.period_look)
+                                            media_style=ctx.config.media_style, period_look=period_look)
         except darkvi_images.QuotaExhausted as e:
             if not quota_hit.is_set():
                 quota_hit.set()
