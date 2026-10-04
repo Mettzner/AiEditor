@@ -105,6 +105,9 @@ class SceneDraft(BaseModel):
     chapter_break: bool
     chapter_title: str | None
     highlight: str | None
+    # recursos de edição (a direção decide o efeito): peso narrativo da cena e citação em tela cheia
+    emphasis: Literal["none", "calm", "tension", "reveal"]
+    quote: str | None
     overlay_language: str
     # CONTEXTO_PROFUNDO_DO_ROTEIRO.md §4
     context_id: str
@@ -134,8 +137,9 @@ def _fallback_window(units: list[dict], avg: float, lang: str) -> PlanWindow:
             must_avoid=[], style_allowance="real_only", allowed_styles=["real_footage"],
             style_reason="fallback automático", visual_intent=text[:200], queries=[kw, f"{kw} close up", f"{kw} outdoor"],
             kind="concreto", energy="media", affinity=Affinity(stock=0.7, youtube=0.2, ai=0.5), ai_kind="image",
-            chapter_break=False, chapter_title=None, highlight=None, overlay_language=lang, context_id="",
-            era_markers_to_show=[], archival_query="", timeless_alternative="", timeless_query=""))
+            chapter_break=False, chapter_title=None, highlight=None, emphasis="none", quote=None,
+            overlay_language=lang, context_id="", era_markers_to_show=[], archival_query="", timeless_alternative="",
+            timeless_query=""))
         start = end + 1
     return PlanWindow(scenes=scenes, music_mood=None)
 
