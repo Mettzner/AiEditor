@@ -59,13 +59,16 @@ class Preset(BaseModel):
     period_look: PeriodLook = "cinematic"  # imagens geradas de época: reconstituição de filme ou aparência de arquivo
     period_grade: bool = True  # gradação de cor uniforme por bloco histórico
     context_cards: bool = True  # card de lugar e data na troca de bloco de contexto
+    # Acabamento da edição: efeitos sonoros (whoosh, impacto, riser, teclas) e textura de filme (grão e vinheta)
+    sfx: bool = True
+    film_look: bool = True
 
 
 # Campos escolhidos na Criação; "salvar como padrão do canal" grava só estes no preset.
 CREATION_FIELDS = [
     "language", "search_language", "visual_style", "direction", "real_pct", "ai_media", "youtube_pct",
     "avg_scene_seconds", "subtitles", "tts_voice", "tts_voice_name", "media_style", "selection_mode",
-    "period_look", "period_grade", "context_cards",
+    "period_look", "period_grade", "context_cards", "sfx", "film_look",
 ]
 
 

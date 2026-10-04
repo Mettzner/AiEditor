@@ -50,6 +50,8 @@ interface Choices {
   period_look: PeriodLook;
   period_grade: boolean;
   context_cards: boolean;
+  sfx: boolean;
+  film_look: boolean;
   tts_voice: string | null;
   tts_voice_name: string | null;
 }
@@ -73,6 +75,8 @@ function fromChannel(c: Channel): Choices {
     period_look: p.period_look ?? "cinematic",
     period_grade: p.period_grade ?? true,
     context_cards: p.context_cards ?? true,
+    sfx: p.sfx ?? true,
+    film_look: p.film_look ?? true,
     tts_voice: p.tts_voice,
     tts_voice_name: p.tts_voice_name,
   };
@@ -396,7 +400,7 @@ export default function CriacaoPage() {
                   className="sm:w-64"
                 />
               </Field>
-              <div className="flex gap-8">
+              <div className="flex flex-wrap gap-x-8 gap-y-3">
                 <label className="flex items-center gap-2 text-sm">
                   <Switch checked={c.subtitles} onCheckedChange={(v) => set("subtitles", v)} /> Legendas
                 </label>
@@ -410,6 +414,12 @@ export default function CriacaoPage() {
                 <label className="flex items-center gap-2 text-sm" title="Card com lugar e data quando o roteiro muda de época ou de lugar, no idioma do vídeo">
                   <Switch checked={c.context_cards} onCheckedChange={(v) => set("context_cards", v)} /> Card de
                   lugar e data
+                </label>
+                <label className="flex items-center gap-2 text-sm" title="Whoosh nas transições, impacto nos títulos, riser antes das revelações e teclas no card de lugar (Freesound ou sintetizados)">
+                  <Switch checked={c.sfx} onCheckedChange={(v) => set("sfx", v)} /> Efeitos sonoros
+                </label>
+                <label className="flex items-center gap-2 text-sm" title="Grão de filme e vinheta suaves no vídeo inteiro">
+                  <Switch checked={c.film_look} onCheckedChange={(v) => set("film_look", v)} /> Textura de filme
                 </label>
               </div>
               <pre className="rounded-md bg-muted/60 p-4 font-mono text-sm leading-relaxed">
@@ -453,7 +463,8 @@ IA   ${fmtDuration(preview.ai)}  →  ${aiLabel}`}
                 <dd>{c.avg_scene_seconds}s por cena</dd>
                 <dt className="text-muted-foreground">Acabamento</dt>
                 <dd>
-                  Legendas {c.subtitles ? "sim" : "não"} · Música {c.music_enabled ? "sim" : "não"}
+                  Legendas {c.subtitles ? "sim" : "não"} · Música {c.music_enabled ? "sim" : "não"} · Efeitos sonoros{" "}
+                  {c.sfx ? "sim" : "não"} · Textura de filme {c.film_look ? "sim" : "não"}
                 </dd>
                 <dt className="text-muted-foreground">Época</dt>
                 <dd>

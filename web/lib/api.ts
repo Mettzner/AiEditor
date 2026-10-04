@@ -50,6 +50,8 @@ export interface Preset {
   period_look?: PeriodLook;
   period_grade?: boolean;
   context_cards?: boolean;
+  sfx?: boolean;
+  film_look?: boolean;
 }
 
 export type MediaStyle = "real_only" | "real_preferred" | "free";
@@ -417,6 +419,8 @@ export const DEFAULT_PRESET: Preset = {
   period_look: "cinematic",
   period_grade: true,
   context_cards: true,
+  sfx: true,
+  film_look: true,
 };
 
 /** Abre um link fora do app: no desktop pelo navegador padrão (via backend); no navegador, em nova aba. */
