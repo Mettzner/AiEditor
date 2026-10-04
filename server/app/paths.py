@@ -51,6 +51,10 @@ def music_dir() -> Path:
     return _ensure(data_dir() / "music")
 
 
+def sfx_dir() -> Path:
+    return _ensure(data_dir() / "sfx")
+
+
 def uploads_dir() -> Path:
     return _ensure(data_dir() / "uploads")
 

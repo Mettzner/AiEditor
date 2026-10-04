@@ -20,6 +20,12 @@ const KEYS: { id: string; label: string; test?: string; note?: string }[] = [
   { id: "pixabay", label: "Pixabay", test: "pixabay" },
   { id: "youtube", label: "YouTube Data API", test: "youtube", note: "o teste gasta 1 unidade" },
   { id: "gemini", label: "Google Gemini", test: "gemini", note: "avalia a folha de miniaturas; sem chave, só ranking de texto" },
+  {
+    id: "freesound",
+    label: "Freesound (efeitos sonoros)",
+    test: "freesound",
+    note: "grátis em freesound.org/apiv2/apply; sem chave, os efeitos são sintetizados",
+  },
   { id: "fal", label: "fal.ai (vídeo IA)", note: "Fase 3" },
   { id: "elevenlabs", label: "ElevenLabs (música)", note: "Fase 4" },
   { id: "openai", label: "OpenAI", note: "opcional" },

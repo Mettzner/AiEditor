@@ -18,6 +18,7 @@ DATA_DIR = paths.data_dir()
 JOBS_DIR = paths.jobs_dir()
 CACHE_DIR = paths.cache_dir()
 MUSIC_DIR = paths.music_dir()
+SFX_DIR = paths.sfx_dir()
 UPLOADS_DIR = paths.uploads_dir()
 DB_PATH = DATA_DIR / "aieditor.db"
 SETTINGS_PATH = DATA_DIR / "settings.json"
@@ -35,6 +36,7 @@ SECRET_PROVIDERS = [
     "gemini",
     "fal",
     "elevenlabs",
+    "freesound",  # efeitos sonoros CC0 (https://freesound.org/apiv2/apply)
     "google_oauth_client",  # JSON do client OAuth (Desktop/Web) do Google Cloud
     "google_refresh_token",
 ]
@@ -118,6 +120,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "darkvi": {"remaining": None, "limit": None, "updated_at": None, "tts_poll_seconds": 3, "tts_timeout_seconds": 1800},
     "gemini": {"blocked_until": None, "blocked_reason": ""},
     "music": {"library_dir": str(MUSIC_DIR), "default_volume_db": -22},
+    # Efeitos sonoros: data/sfx/<categoria>/. Com chave do Freesound, baixa sons CC0 quando faltam; sem ela (ou
+    # offline), usa sons sintetizados. allow_attribution aceita também CC BY (creditado no creditos.txt).
+    "sfx": {"library_dir": str(SFX_DIR), "freesound": True, "allow_attribution": False, "per_category": 4},
     "folders": {"cache": str(CACHE_DIR), "jobs": str(JOBS_DIR), "auto_cleanup": False},
     "fonts_dir": str(DATA_DIR / "fonts"),
     "words_per_minute": {"en": 150, "pt": 145, "es": 150},

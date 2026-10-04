@@ -21,6 +21,7 @@ from ..providers.llm.anthropic import AnthropicLLM
 from ..providers.youtube import client as youtube
 from ..providers.youtube import quota as yt_quota
 from ..providers.music import library
+from ..providers.sfx import freesound
 from ..providers.storage import gdrive
 from ..providers.stock import REGISTRY
 
@@ -74,6 +75,8 @@ def test_provider(provider: str):
             return youtube.test()
         if provider == "gemini":
             return gemini.test()
+        if provider == "freesound":
+            return freesound.test()
         if provider == "ffmpeg":
             enc = ffmpeg.encoders()
             # h264_amf: listado E funcionando neste PC (codifica quadros de teste)
