@@ -58,7 +58,7 @@ def _wrap(text: str) -> str:
     return " ".join(words[:best]) + r"\N" + " ".join(words[best:])
 
 
-def write_ass(words: list[dict], style: dict, dest: Path) -> Path:
+def write_ass(words: list[dict], style: dict, dest: Path, mute: list[list[float]] | None = None) -> Path:
     family, bold = _family(style["font"])
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -76,7 +76,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     lines = []
     for c in cues(words):
+        # enquanto uma citação ocupa a tela, as mesmas palavras não se repetem na legenda
+        if any(c["start"] < e and c["end"] > s for s, e in mute or []):
+            continue
         text = _wrap(c["text"].replace("{", "(").replace("}", ")"))
-        lines.append(f"Dialogue: 0,{_ts(c['start'])},{_ts(c['end'])},Default,,0,0,0,,{text}")
+        lines.append(f"Dialogue: 0,{_ts(c['start'])},{_ts(c['end'])},Default,,0,0,0,,{{\\fad(80,60)}}{text}")
     dest.write_text(header + "\n".join(lines) + "\n", encoding="utf-8-sig")
     return dest

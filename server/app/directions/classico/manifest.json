@@ -1,12 +1,34 @@
 {
   "name": "Clássico",
-  "description": "Cortes secos, crossfade curto só em mudanças de capítulo e textos simples para números, nomes e datas.",
+  "description": "Documentário sóbrio com acabamento de cinema: cortes secos, transições pontuais, movimento de câmera, títulos animados, citações, textura de filme e sound design sutil.",
   "image": "card.svg",
   "params": {
     "duration_variation": 0.3,
     "crossfade_seconds": 0.3,
     "overlay_min_gap_seconds": 20,
     "overlay_duration_seconds": 3.5,
-    "chapter_title_seconds": 3.0
+    "chapter_title_seconds": 3.0,
+    "context_card_seconds": 3.5,
+    "transitions": {
+      "chapter": {"type": "fadeblack", "duration": 0.8},
+      "context": {"type": "fade", "duration": 0.7},
+      "reveal": {"type": "fadewhite", "duration": 0.3},
+      "calm": {"type": "fade", "duration": 0.6}
+    },
+    "reveal_min_gap_seconds": 30,
+    "calm_dissolve_min_gap_seconds": 15,
+    "video_motion": {
+      "tension": {"from": [1.0, 0.5, 0.5], "to": [1.08, 0.5, 0.48]},
+      "reveal": {"from": [1.0, 0.5, 0.5], "to": [1.06, 0.5, 0.5]},
+      "long": {"from": [1.04, 0.47, 0.5], "to": [1.04, 0.53, 0.5]},
+      "long_scene_seconds": 8.0
+    },
+    "photo_frame": true,
+    "light_leaks": true,
+    "quote_min_gap_seconds": 60,
+    "quote_max_seconds": 9.0,
+    "film_look": {"grain": 3, "vignette": "PI/5"},
+    "sfx_min_gap_seconds": 1.2,
+    "sfx_gain_db": {"whoosh": -20, "swoosh_soft": -24, "impact": -15, "riser": -21, "click": -27}
   }
 }

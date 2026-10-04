@@ -1,12 +1,17 @@
 """Etapa 7: render da timeline → output/final.mp4 (§10).
 
-1. Normaliza cada cena em paralelo (corte, 1920×1080, 30 fps, Ken Burns nas imagens). A cena que
-   antecede um crossfade ganha uma cauda extra do tamanho da transição.
-2. Cenas com crossfade de entrada recebem, nos primeiros quadros, a mistura com a cauda da anterior.
-   Assim a passada final não precisa de xfade (que, junto com overlay, trava o agendador do FFmpeg).
-3. Overlays (destaques, títulos) são aplicados dentro da cena em que caem, com o filtro `movie`.
+1. Normaliza cada cena em paralelo (corte, 1920×1080, 30 fps). Imagens ganham Ken Burns (fotos de arquivo,
+   retratos e panorâmicas entram inteiras numa moldura sobre o próprio fundo desfocado); vídeos podem ganhar
+   um push-in lento. A cena que antecede uma transição ganha uma cauda extra do tamanho dela.
+2. Cenas com transição de entrada (dissolve, fade pelo preto, flash branco...) recebem, nos primeiros
+   quadros, a mistura com a cauda da anterior. Assim a passada final não precisa de xfade (que, junto com
+   overlay, trava o agendador do FFmpeg).
+3. Overlays animados (destaques, títulos, cards, citações, light leaks) são desenhados quadro a quadro
+   (anim.py), codificados com transparência e aplicados dentro da cena em que caem, com o filtro `movie`.
    Uma imagem em loop como segunda entrada da passada final trava o agendador do FFmpeg 9.
-4. Passada final única: concat (com outpoint cortando as caudas) + legendas + narração + música com ducking.
+4. Efeitos sonoros são pré-mixados numa única faixa (sfx.wav), posicionados no ponto exato de cada deixa.
+5. Passada final única: concat (com outpoint cortando as caudas) + textura de filme + legendas + narração +
+   música com ducking + efeitos sonoros.
 """
 from __future__ import annotations
 
@@ -14,10 +19,12 @@ import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import numpy as np
+
 from ...directions import get_direction
 from ...worker.context import JobContext, StepError
 from ..context import GRADE_FILTERS
-from . import ffmpeg
+from . import anim, ffmpeg
 from .fonts import find_font
 from .subtitles import write_ass
 
@@ -36,20 +43,52 @@ def _intermediate_codec(ctx: JobContext) -> list[str]:
             "-g", str(FPS), "-pix_fmt", "yuv420p", "-r", str(FPS), "-an"]
 
 
+def _zoompan(motion: dict, frames: int, d: int) -> str:
+    """zoompan de (zoom, centro x, centro y) inicial → final, com easing suave nas pontas."""
+    (z0, x0, y0), (z1, x1, y1) = motion["from"], motion["to"]
+    lin = f"(on/{max(1, frames - 1)})"
+    p = f"(0.5-0.5*cos(PI*{lin}))"
+    z = f"{z0}+({z1 - z0})*{p}"
+    x = f"max(0,min(iw-iw/zoom,({x0}+({x1 - x0})*{p})*iw-iw/zoom/2))"
+    y = f"max(0,min(ih-ih/zoom,({y0}+({y1 - y0})*{p})*ih-ih/zoom/2))"
+    return f"zoompan=z='{z}':x='{x}':y='{y}':d={d}:s={W}x{H}:fps={FPS}"
+
+
+# Foto inteira numa moldura clara, levemente girada, com sombra, sobre a própria imagem desfocada (em 4K)
+PHOTO_FRAME = (
+    "[0:v]format=rgba,split[a][b];"
+    "[a]scale=3840:2160:force_original_aspect_ratio=increase,crop=3840:2160,boxblur=40:3,"
+    "eq=brightness=-0.10:saturation=0.7[bg];"
+    "[b]scale=3100:1760:force_original_aspect_ratio=decrease,pad=iw+56:ih+56:28:28:color=0xF1ECE2FF,"
+    "rotate=-0.012:c=none:ow=rotw(-0.012):oh=roth(-0.012),split[p][s];"
+    "[s]colorchannelmixer=rr=0:gg=0:bb=0:aa=0.55,"
+    "boxblur=luma_radius=26:luma_power=2:alpha_radius=26:alpha_power=2[sh];"
+    "[bg][sh]overlay=(W-w)/2+24:(H-h)/2+32[bs];"
+    "[bs][p]overlay=(W-w)/2:(H-h)/2,format=yuv420p,"
+)
+
+
 def _normalize_scene(ctx: JobContext, scene: dict, frames: int, out: Path) -> None:
     asset = ctx.dir / scene["asset"]
     # gradação do bloco de contexto (CONTEXTO_PROFUNDO_DO_ROTEIRO.md §8), antes da conversão final de cor
     grade = GRADE_FILTERS.get(scene.get("grade") or "")
     graded = f"{grade}," if grade else ""
-    if scene.get("motion") and scene["motion"]["type"] == "kenburns":
-        (z0, x0, y0), (z1, x1, y1) = scene["motion"]["from"], scene["motion"]["to"]
-        p = f"(on/{max(1, frames - 1)})"
-        z = f"{z0}+({z1 - z0})*{p}"
-        x = f"max(0,min(iw-iw/zoom,({x0}+({x1 - x0})*{p})*iw-iw/zoom/2))"
-        y = f"max(0,min(ih-ih/zoom,({y0}+({y1 - y0})*{p})*ih-ih/zoom/2))"
-        vf = (f"scale=3840:2160:force_original_aspect_ratio=increase,crop=3840:2160,"
-              f"zoompan=z='{z}':x='{x}':y='{y}':d={frames}:s={W}x{H}:fps={FPS},setsar=1,{graded}format=yuv420p")
-        args = ["-i", str(asset), "-vf", vf]
+    motion = scene.get("motion") or {}
+    if motion.get("type") == "kenburns":
+        zp = _zoompan(motion, frames, frames)
+        if scene.get("frame") == "photo":
+            args = ["-i", str(asset), "-filter_complex", f"{PHOTO_FRAME}{zp},setsar=1,{graded}format=yuv420p[v]",
+                    "-map", "[v]"]
+        else:
+            vf = (f"scale=3840:2160:force_original_aspect_ratio=increase,crop=3840:2160,"
+                  f"{zp},setsar=1,{graded}format=yuv420p")
+            args = ["-i", str(asset), "-vf", vf]
+    elif motion.get("type") == "push":
+        # vídeo: push-in ou deslize lento; 1,5× de resolução basta para o movimento sair sem tremor
+        vf = (f"scale=2880:1620:force_original_aspect_ratio=increase,crop=2880:1620,fps={FPS},"
+              f"tpad=stop_mode=clone:stop_duration={frames / FPS:.3f},{_zoompan(motion, frames, 1)},setsar=1,"
+              f"{graded}format=yuv420p")
+        args = ["-ss", f"{scene.get('in', 0):.3f}", "-i", str(asset), "-vf", vf]
     else:
         vf = (f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps={FPS},setsar=1,"
               f"{graded}format=yuv420p,tpad=stop_mode=clone:stop_duration={frames / FPS:.3f}")
@@ -59,12 +98,17 @@ def _normalize_scene(ctx: JobContext, scene: dict, frames: int, out: Path) -> No
     tmp.replace(out)
 
 
+# nomes da timeline → transições do filtro xfade ("crossfade" é o nome antigo do fade simples)
+XFADE = {"crossfade": "fade"}
+
+
 def _crossfade_in(ctx: JobContext, prev_file: Path, prev_frames: int, raw: Path, frames: int, duration: float,
-                  out: Path) -> None:
+                  out: Path, transition: str = "fade") -> None:
     """Mistura a cauda da cena anterior (quadros após prev_frames) com o início desta cena."""
     f = (f"[0:v]trim=start_frame={prev_frames},setpts=PTS-STARTPTS[a];"
          f"[1:v]setpts=PTS-STARTPTS[b];"
-         f"[a][b]xfade=transition=fade:duration={duration:.3f}:offset=0,format=yuv420p[v]")
+         f"[a][b]xfade=transition={XFADE.get(transition, transition)}:duration={duration:.3f}:offset=0,"
+         f"format=yuv420p[v]")
     tmp = out.with_suffix(".tmp.mp4")
     ffmpeg.run(["-i", str(prev_file), "-i", str(raw), "-filter_complex", f, "-map", "[v]", "-frames:v", str(frames)]
                + _intermediate_codec(ctx) + [str(tmp)])
@@ -96,9 +140,9 @@ def _render(ctx: JobContext, tl: dict) -> str:
     n = len(scenes)
     main = {s["id"]: _frames(s["end"] - s["start"]) for s in scenes}
     tail = {a["id"]: _frames(b["transition_in"]["duration"])
-            for a, b in zip(scenes, scenes[1:]) if b["transition_in"]["type"] == "crossfade"}
+            for a, b in zip(scenes, scenes[1:]) if b["transition_in"]["type"] != "cut"}
     total = {sid: main[sid] + tail.get(sid, 0) for sid in main}
-    xin = {b["id"]: a["id"] for a, b in zip(scenes, scenes[1:]) if b["transition_in"]["type"] == "crossfade"}
+    xin = {b["id"]: a["id"] for a, b in zip(scenes, scenes[1:]) if b["transition_in"]["type"] != "cut"}
 
     def final_path(sid: str) -> Path:
         return rdir / f"{sid}.mp4"
@@ -118,28 +162,42 @@ def _render(ctx: JobContext, tl: dict) -> str:
                 ctx.check_cancel()
                 done += 1
                 ctx.progress(0.5 * done / n, f"Preparando cenas {done}/{n}")
-        # 2) crossfades, em ordem (uma cena pode ter crossfade de entrada e de saída)
+        # 2) transições, em ordem (uma cena pode ter transição de entrada e de saída)
         for s in scenes:
             sid = s["id"]
             if sid in xin and not final_path(sid).exists():
                 prev = xin[sid]
                 _crossfade_in(ctx, final_path(prev), main[prev], raw_path(sid), total[sid],
-                              s["transition_in"]["duration"], final_path(sid))
+                              s["transition_in"]["duration"], final_path(sid), s["transition_in"]["type"])
     except ffmpeg.FFmpegError as e:
         raise StepError("RENDER_FAILED", f"Falha ao preparar cena: {e}", e.log) from e
 
     # 3) overlays dentro da cena (a direção já limita cada overlay a uma cena)
     style = tl["style"]
     direction = get_direction(tl["direction"])
+    animated = getattr(direction.overlays, "ANIMATED", {}) if direction.overlays else {}
+    static = getattr(direction.overlays, "TEMPLATES", {}) if direction.overlays else {}
+    overlays = tl.get("overlays", [])
     by_scene: dict[str, list[tuple[dict, Path]]] = {}
-    for i, o in enumerate(tl.get("overlays", [])):
-        tpl = getattr(direction.overlays, "TEMPLATES", {}).get(o["type"]) if direction.overlays else None
-        host = next((s for s in scenes if s["start"] <= o["start"] < s["end"]), None)
-        if tpl and host:
-            png = ctx.path("render", "overlays", f"o{i:03d}.png")
-            if not png.exists():
-                tpl(o["text"], style, png)
-            by_scene.setdefault(host["id"], []).append((o, png))
+    try:
+        for i, o in enumerate(overlays):
+            host = next((s for s in scenes if s["start"] <= o["start"] < s["end"]), None)
+            if not host:
+                continue
+            if o["type"] in animated:
+                src = ctx.path("render", "overlays", f"o{i:03d}.mkv")
+                if not src.exists():
+                    ctx.progress(0.5 + 0.02 * i / len(overlays), f"Animando textos {i + 1}/{len(overlays)}")
+                    anim.encode(animated[o["type"]](o, style), o["end"] - o["start"], src)
+            elif o["type"] in static:  # direções com templates estáticos (PNG)
+                src = ctx.path("render", "overlays", f"o{i:03d}.png")
+                if not src.exists():
+                    static[o["type"]](o["text"], style, src)
+            else:
+                continue
+            by_scene.setdefault(host["id"], []).append((o, src))
+    except ffmpeg.FFmpegError as e:
+        raise StepError("RENDER_FAILED", f"Falha ao animar overlay: {e}", e.log) from e
     scene_file: dict[str, str] = {s["id"]: f"scenes/{s['id']}.mp4" for s in scenes}
     try:
         for s in scenes:
@@ -167,7 +225,7 @@ def _render(ctx: JobContext, tl: dict) -> str:
     fonts_dir = ctx.path("render", "fonts", "x").parent
     if tl.get("subtitles"):
         transcript = ctx.read_json("transcript.json")
-        write_ass(transcript["words"], style["subtitle"], ctx.path("subs.ass"))
+        write_ass(transcript["words"], style["subtitle"], ctx.path("subs.ass"), mute=tl["subtitles"].get("mute"))
         try:
             shutil.copy(find_font(style["subtitle"]["font"]), fonts_dir)
         except (FileNotFoundError, OSError):
@@ -191,16 +249,26 @@ def _render(ctx: JobContext, tl: dict) -> str:
 
 def _bake_overlays(ctx: JobContext, scene_mp4: Path, scene_start: float, items: list[tuple[dict, Path]],
                    frames: int, out: Path) -> None:
-    """Sobrepõe os PNGs (com fade) à cena. `movie` lê a imagem dentro do grafo: sem segunda entrada."""
+    """Sobrepõe os overlays à cena: vídeos animados com alfa (.mkv) ou PNGs com fade. `movie` lê o arquivo dentro
+    do grafo, sem segunda entrada. Citações desfocam e escurecem a cena por trás enquanto duram."""
     f, cur = [], "0:v"
-    for k, (o, png) in enumerate(items):
+    for k, (o, path) in enumerate(items):
         dur = o["end"] - o["start"]
         rel = max(0.0, o["start"] - scene_start)
-        fd = min(0.3, dur / 3)
-        src = png.relative_to(ctx.dir).as_posix()
-        f.append(f"movie={src},loop=loop=-1:size=1,fps={FPS},trim=duration={dur:.3f},format=rgba,"
-                 f"fade=t=in:st=0:d={fd:.2f}:alpha=1,fade=t=out:st={dur - fd:.3f}:d={fd:.2f}:alpha=1,"
-                 f"setpts=PTS-STARTPTS+{rel:.3f}/TB[ov{k}]")
+        src = path.relative_to(ctx.dir).as_posix()
+        if o.get("backdrop") == "blur":
+            f.append(f"[{cur}]split[bm{k}][bb{k}]")
+            f.append(f"[bb{k}]boxblur=22:2,eq=brightness=-0.06,format=yuva420p,"
+                     f"fade=t=in:st={rel:.3f}:d=0.35:alpha=1,fade=t=out:st={rel + dur - 0.4:.3f}:d=0.4:alpha=1[bf{k}]")
+            f.append(f"[bm{k}][bf{k}]overlay=0:0[bk{k}]")
+            cur = f"bk{k}"
+        if path.suffix == ".mkv":
+            f.append(f"movie={src},setpts=PTS-STARTPTS+{rel:.3f}/TB[ov{k}]")
+        else:
+            fd = min(0.3, dur / 3)
+            f.append(f"movie={src},loop=loop=-1:size=1,fps={FPS},trim=duration={dur:.3f},format=rgba,"
+                     f"fade=t=in:st=0:d={fd:.2f}:alpha=1,fade=t=out:st={dur - fd:.3f}:d={fd:.2f}:alpha=1,"
+                     f"setpts=PTS-STARTPTS+{rel:.3f}/TB[ov{k}]")
         f.append(f"[{cur}][ov{k}]overlay=0:0:eof_action=pass:repeatlast=0[v{k}]")
         cur = f"v{k}"
     f.append(f"[{cur}]format=yuv420p[v]")
@@ -209,6 +277,57 @@ def _bake_overlays(ctx: JobContext, scene_mp4: Path, scene_start: float, items: 
                 "-frames:v", str(frames)] + _intermediate_codec(ctx) + [tmp.relative_to(ctx.dir).as_posix()],
                cwd=ctx.dir)
     tmp.replace(out)
+
+
+SFX_RATE = 48000
+
+
+def _load_sfx(path: str, cache: dict[str, np.ndarray]) -> np.ndarray:
+    if path not in cache:
+        data = np.frombuffer(ffmpeg.decode_mono_f32(Path(path), SFX_RATE), dtype=np.float32).copy()
+        peak = float(np.max(np.abs(data))) if data.size else 0.0
+        cache[path] = data / peak * 0.9 if peak > 0 else data  # todo som no mesmo nível antes do ganho da deixa
+    return cache[path]
+
+
+def mix_sfx(events: list[dict], duration: float, dest: Path, load=_load_sfx) -> Path | None:
+    """Pré-mixa os efeitos numa faixa mono: cada som entra no ponto da deixa conforme o alinhamento — "start"
+    (começa ali), "end" (termina ali: risers) ou "peak" (o pico de energia cai ali: whooshes de transição)."""
+    if not events:
+        return None
+    n = int((duration + 1) * SFX_RATE)
+    bed = np.zeros(n, np.float32)
+    cache: dict[str, np.ndarray] = {}
+    for ev in events:
+        snd = load(ev["file"], cache)
+        if not snd.size:
+            continue
+        if ev["category"] == "riser" and snd.size > 3 * SFX_RATE:  # risers longos: só os 3 s finais
+            snd = snd[-3 * SFX_RATE:].copy()
+            ramp = int(0.3 * SFX_RATE)
+            snd[:ramp] *= np.linspace(0, 1, ramp, dtype=np.float32)
+        if ev.get("align") == "end":
+            offset = snd.size
+        elif ev.get("align") == "peak":
+            win = int(0.02 * SFX_RATE)
+            rough = int(np.argmax(np.convolve(np.abs(snd), np.ones(win, np.float32), "same")))  # região de energia
+            lo = max(0, rough - win)
+            offset = lo + int(np.argmax(np.abs(snd[lo:rough + win])))  # pico exato dentro dela
+        else:
+            offset = 0
+        i = int(round(ev["start"] * SFX_RATE)) - offset
+        a, b = max(0, i), min(n, i + snd.size)
+        if b > a:
+            bed[a:b] += snd[a - i:b - i] * (10 ** (ev.get("gain_db", -20) / 20))
+    pcm = (np.clip(bed, -1, 1) * 32767).astype("<i2")
+    import wave
+
+    with wave.open(str(dest), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SFX_RATE)
+        w.writeframes(pcm.tobytes())
+    return dest
 
 
 def _final_pass(ctx: JobContext, tl: dict, concat: Path, out: Path, use_amf: bool) -> None:
@@ -226,9 +345,18 @@ def _final_pass(ctx: JobContext, tl: dict, concat: Path, out: Path, use_amf: boo
     narr_idx = add_input("-i", tl["audio"]["narration"])
     music = tl["audio"].get("music")
     music_idx = add_input("-stream_loop", "-1", "-i", music["file"]) if music else None
+    bed = mix_sfx(tl["audio"].get("sfx") or [], duration, ctx.path("render", "sfx.wav"))
+    sfx_idx = add_input("-i", str(bed.relative_to(ctx.dir))) if bed else None
 
     f: list[str] = [f"[{video_idx}:v]settb=AVTB,fps={FPS},format=yuv420p[v0]"]
     cur = "v0"
+    look = tl.get("look")
+    if look:  # textura de filme antes das legendas (legenda fica limpa): vinheta + grão só na luminância
+        chain = [f"vignette=angle={look['vignette']}"] if look.get("vignette") else []
+        chain += [f"noise=c0s={int(look['grain'])}:c0f=t+u"] if look.get("grain") else []
+        if chain:
+            f.append(f"[{cur}]{','.join(chain)}[vl]")
+            cur = "vl"
     if tl.get("subtitles"):
         f.append(f"[{cur}]ass=subs.ass:fontsdir=render/fonts[vs]")
         cur = "vs"
@@ -244,9 +372,14 @@ def _final_pass(ctx: JobContext, tl: dict, concat: Path, out: Path, use_amf: boo
             f.append("[m][n2]sidechaincompress=threshold=0.05:ratio=6:attack=30:release=500[md]")
         else:
             f.append("[n2]anullsink;[m]anull[md]")
-        f.append("[n1][md]amix=inputs=2:duration=first:normalize=0[aout]")
+        f.append("[n1][md]amix=inputs=2:duration=first:normalize=0[amain]")
     else:
-        f.append(f"[{narr_idx}:a]anull[aout]")
+        f.append(f"[{narr_idx}:a]aformat=sample_rates=48000:channel_layouts=stereo[amain]")
+    if sfx_idx is not None:
+        f.append(f"[{sfx_idx}:a]aformat=sample_rates=48000:channel_layouts=stereo[fx]")
+        f.append("[amain][fx]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.97:level=0[aout]")
+    else:
+        f.append("[amain]anull[aout]")
 
     script = ctx.path("render", "filter.txt")
     script.write_text(";\n".join(f), encoding="utf-8")

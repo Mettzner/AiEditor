@@ -22,6 +22,8 @@ CATALOG: dict[str, tuple[str, str]] = {
     "IMAGE_QUOTA_EXHAUSTED": ("warning", "Saldo diário da Darkvi acabou"),
     "REFERENCE_NOT_ALLOWED": ("warning", "Plano Darkvi sem imagem de referência"),
     "MUSIC_FAILED": ("warning", "Sem música compatível; vídeo segue sem música"),
+    "QUOTE_DROPPED": ("info", "Citação do planejamento não estava na narração e foi descartada"),
+    "SFX_FALLBACK": ("info", "Freesound indisponível; efeitos sonoros sintetizados"),
     "AMF_FALLBACK": ("info", "Encode AMF falhou; render usou libx264"),
     "RENDER_FAILED": ("error", "Falha no FFmpeg"),
     "DRIVE_UPLOAD_FAILED": ("error", "Upload para o Drive falhou; arquivo mantido localmente"),

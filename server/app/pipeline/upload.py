@@ -12,18 +12,24 @@ from .report import write_report, write_visual_report
 
 
 def _credits(ctx: JobContext) -> str | None:
-    """creditos.txt: atribuição CC-BY do YouTube (obrigatória) e dos bancos (pedida pelo Pexels/Pixabay)."""
-    if not (ctx.dir / "selection.json").exists():
-        return None
+    """creditos.txt: atribuição CC-BY do YouTube (obrigatória), dos bancos (pedida pelo Pexels/Pixabay) e dos
+    efeitos sonoros do Freesound (CC BY exige; CC0 é cortesia)."""
     from ..providers.stock.archives import ARCHIVE_PROVIDERS
 
-    sel = ctx.read_json("selection.json")
+    sel = ctx.read_json("selection.json") if (ctx.dir / "selection.json").exists() else {}
     yt = [v for v in sel.values() if v.get("source") == "youtube"]
     archive = [v for v in sel.values() if v.get("provider") in ARCHIVE_PROVIDERS and v.get("asset")]
     stock = [v for v in sel.values() if v.get("source") == "stock" and v.get("provider") not in ARCHIVE_PROVIDERS]
-    if not yt and not stock and not archive:
+    timeline = ctx.read_json("timeline.json") if (ctx.dir / "timeline.json").exists() else {}
+    sounds = {e["file"]: e for e in (timeline.get("audio") or {}).get("sfx") or [] if e.get("source") == "freesound"}
+    if not yt and not stock and not archive and not sounds:
         return None
     lines: list[str] = []
+    if sounds:
+        lines += ["Efeitos sonoros (Freesound):", ""]
+        lines += [f"- {e.get('author') or 'autor desconhecido'} — {e.get('license', '')} — {e.get('page_url', '')}"
+                  for e in sounds.values()]
+        lines.append("")
     if archive:  # acervos históricos: autor, licença e página de cada item (CC BY exige atribuição)
         names = {"wikimedia": "Wikimedia Commons", "loc": "Library of Congress", "internet_archive": "Internet Archive"}
         lines += ["Acervos históricos:", ""]

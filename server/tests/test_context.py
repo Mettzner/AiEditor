@@ -389,11 +389,11 @@ def test_direcao_aplica_gradacao_e_card_de_lugar_na_troca_de_bloco(env, monkeypa
 
 
 def test_overlay_do_card_de_lugar_renderiza(tmp_path):
-    from app.directions.classico.overlays import TEMPLATES
+    from app.directions.classico.overlays import ANIMATED
 
     style = {"font": "Montserrat Bold", "color_primary": "#FFFFFF", "color_accent": "#E63946"}
     try:
-        out = TEMPLATES["place_card"]("Rural Ireland, 1850", style, tmp_path / "card.png")
+        frame = ANIMATED["place_card"]({"text": "Rural Ireland, 1850", "start": 0, "end": 3.5}, style)
     except (OSError, FileNotFoundError) as e:  # máquina sem a fonte
         pytest.skip(str(e))
-    assert Path(out).stat().st_size > 0
+    assert frame(2.5).getchannel("A").getextrema()[1] > 0
