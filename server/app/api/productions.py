@@ -13,7 +13,7 @@ from sqlmodel import Session, delete, select
 from ..config import job_dir, load_settings
 from ..db import get_session, session_scope
 from ..estimate import estimate
-from ..lang import resolve_video_language
+from ..lang import detect as detect_language
 from ..pipeline.report import build_report
 from ..models import CREATION_FIELDS, Channel, Issue, Preset, Production, ProductionConfig, ProductionStep, now
 
@@ -130,16 +130,25 @@ def get_production(production_id: int, s: Session = Depends(get_session)):
     return card
 
 
-def _build_config(s: Session, channel_id: int, title: str, overrides: dict, audio_mode: str) -> ProductionConfig:
+# Decididos pelo sistema, nunca pela tela: idioma (detectado no roteiro), buscas (inglês), estilo visual e
+# representação de época (interpretados do roteiro pela Bíblia de Contexto).
+AUTOMATIC_FIELDS = {"language", "search_language", "visual_style", "period_look"}
+
+
+def _build_config(s: Session, channel_id: int, title: str, overrides: dict, audio_mode: str,
+                  script: str = "") -> ProductionConfig:
     ch = s.get(Channel, channel_id)
     if not ch:
         raise HTTPException(404, "Canal não encontrado")
     base = Preset.model_validate(ch.preset).model_dump()
     music = overrides.pop("music_enabled", None)
-    base.update({k: v for k, v in overrides.items() if k in Preset.model_fields})
+    base.update({k: v for k, v in overrides.items() if k in Preset.model_fields and k not in AUTOMATIC_FIELDS})
     if music is not None:
         base["music"]["enabled"] = bool(music)
-    return ProductionConfig(**base, title=title, channel_name=ch.name, audio_mode=audio_mode)  # type: ignore[arg-type]
+    lang = detect_language(script) or "en"
+    base.update(language=lang, search_language="en", visual_style="", period_look="cinematic")
+    return ProductionConfig(**base, title=title, channel_name=ch.name, audio_mode=audio_mode,  # type: ignore[arg-type]
+                            video_language=lang)
 
 
 @router.post("/productions")
@@ -165,8 +174,7 @@ async def create_production(
         ext = audio.filename.rsplit(".", 1)[-1].lower()  # type: ignore[union-attr]
         if ext not in AUDIO_EXT:
             raise HTTPException(400, "Envie um arquivo mp3, wav ou m4a")
-    cfg = _build_config(s, channel_id, title, json.loads(config or "{}"), audio_mode)
-    cfg.video_language, diverged = resolve_video_language(cfg.language, script)
+    cfg = _build_config(s, channel_id, title, json.loads(config or "{}"), audio_mode, script)
     if audio_mode == "tts" and not cfg.tts_voice:
         raise HTTPException(400, "Sem áudio enviado e nenhum narrador selecionado")
     if save_as_default:
@@ -181,11 +189,6 @@ async def create_production(
     s.add(p)
     s.commit()
     s.refresh(p)
-    if diverged:
-        s.add(Issue(production_id=p.id, code="LANGUAGE_MISMATCH", severity="warning",  # type: ignore[arg-type]
-                    message=f"O roteiro está em '{diverged}', mas a produção foi configurada em '{cfg.language}'. "
-                            f"Narração, legendas e textos na tela seguirão o roteiro ({diverged}).",))
-        s.commit()
     if audio_mode == "upload":
         dest = job_dir(p.id) / "input" / f"narration.{ext}"  # type: ignore[arg-type]
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -275,5 +278,5 @@ class EstimateIn(BaseModel):
 
 @router.post("/estimate")
 def estimate_route(body: EstimateIn, s: Session = Depends(get_session)):
-    cfg = _build_config(s, body.channel_id, body.title or "-", dict(body.config), body.audio_mode)
+    cfg = _build_config(s, body.channel_id, body.title or "-", dict(body.config), body.audio_mode, body.script)
     return estimate(cfg, body.script, body.audio_seconds)

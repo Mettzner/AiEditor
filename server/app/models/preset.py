@@ -65,10 +65,11 @@ class Preset(BaseModel):
 
 
 # Campos escolhidos na Criação; "salvar como padrão do canal" grava só estes no preset.
+# Idioma, idioma das buscas, estilo visual e representação de época não estão aqui: o sistema decide a partir do
+# roteiro (api/productions.py, AUTOMATIC_FIELDS).
 CREATION_FIELDS = [
-    "language", "search_language", "visual_style", "direction", "real_pct", "ai_media", "youtube_pct",
-    "avg_scene_seconds", "subtitles", "tts_voice", "tts_voice_name", "media_style", "selection_mode",
-    "period_look", "period_grade", "context_cards", "sfx", "film_look",
+    "direction", "real_pct", "ai_media", "youtube_pct", "avg_scene_seconds", "subtitles", "tts_voice",
+    "tts_voice_name", "media_style", "selection_mode", "period_grade", "context_cards", "sfx", "film_look",
 ]
 
 

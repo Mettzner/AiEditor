@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 
-from app.lang import is_mismatch, resolve_video_language
+from app.lang import detect, is_mismatch
 from app.pipeline import direct
 from app.pipeline import select as sel_mod
 from app.pipeline.select import Decision, Option
@@ -255,9 +255,9 @@ def test_idioma_dos_overlays():
 def test_idioma_do_video_segue_o_roteiro():
     en = "Every year Americans spend over two hundred billion dollars on meat, but plants can do better."
     pt = "Todos os anos os brasileiros gastam bilhões com carne, mas as plantas podem fazer melhor."
-    assert resolve_video_language("en", en) == ("en", None)
-    assert resolve_video_language("pt", pt) == ("pt", None)
-    assert resolve_video_language("en", pt) == ("pt", "pt")
+    assert detect(en) == "en"
+    assert detect(pt) == "pt"
+    assert detect("ok") is None  # pouco texto: o sistema usa inglês
 
 
 def test_overlay_em_portugues_num_video_em_ingles_e_corrigido(env, monkeypatch):

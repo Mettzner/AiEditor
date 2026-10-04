@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, ArrowLeft, ArrowRight, Check, Play, Upload } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Check, Play, Sparkles, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { AI_MEDIA, LANGS } from "@/components/channel-form";
+import { AI_MEDIA } from "@/components/channel-form";
 import { Field, SimpleSelect, SplitSlider } from "@/components/fields";
 import { VoicePicker } from "@/components/voice-picker";
 import {
@@ -23,20 +23,18 @@ import {
   type Direction,
   type Estimate,
   type MediaStyle,
-  type PeriodLook,
-  PERIOD_LOOKS,
   type SelectionMode,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-const STEPS = ["Conteúdo", "Direção e estilo", "Composição e ritmo", "Resumo"];
-const WPM: Record<string, number> = { en: 150, pt: 145, es: 150 };
+const STEPS = ["Conteúdo", "Direção", "Composição e ritmo", "Resumo"];
+const WPM = 150; // só para a estimativa na tela; o servidor usa o idioma detectado no roteiro
 
-/** Escolhas da Criação; vêm pré-preenchidas com o padrão salvo do canal. */
+/**
+ * Escolhas da Criação; vêm pré-preenchidas com o padrão salvo do canal. Idioma, buscas, estilo visual e época não
+ * aparecem aqui: o sistema interpreta tudo a partir do roteiro.
+ */
 interface Choices {
-  language: string;
-  search_language: string;
-  visual_style: string;
   direction: string;
   real_pct: number;
   ai_media: "both" | "video" | "image";
@@ -47,7 +45,6 @@ interface Choices {
   media_style: MediaStyle;
   selection_mode: SelectionMode;
   llm_economy: boolean;
-  period_look: PeriodLook;
   period_grade: boolean;
   context_cards: boolean;
   sfx: boolean;
@@ -59,9 +56,6 @@ interface Choices {
 function fromChannel(c: Channel): Choices {
   const p = c.preset;
   return {
-    language: p.language,
-    search_language: p.search_language,
-    visual_style: p.visual_style,
     direction: p.direction,
     real_pct: p.real_pct,
     ai_media: p.ai_media,
@@ -72,7 +66,6 @@ function fromChannel(c: Channel): Choices {
     media_style: p.media_style ?? "real_preferred",
     selection_mode: p.selection_mode ?? "fast",
     llm_economy: p.llm_economy ?? false,
-    period_look: p.period_look ?? "cinematic",
     period_grade: p.period_grade ?? true,
     context_cards: p.context_cards ?? true,
     sfx: p.sfx ?? true,
@@ -126,8 +119,7 @@ export default function CriacaoPage() {
   const set = <K extends keyof Choices>(k: K, v: Choices[K]) => setChoices((x) => (x ? { ...x, [k]: v } : x));
 
   const words = useMemo(() => script.split(/\s+/).filter(Boolean).length, [script]);
-  const wpm = WPM[c?.language ?? "en"] ?? 150;
-  const duration = audioMode === "upload" && audioSeconds ? audioSeconds : (words / wpm) * 60;
+  const duration = audioMode === "upload" && audioSeconds ? audioSeconds : (words / WPM) * 60;
 
   const preview = useMemo(() => {
     if (!c) return null;
@@ -187,7 +179,6 @@ export default function CriacaoPage() {
   }
 
   const aiLabel = c ? AI_MEDIA.find((m) => m.value === c.ai_media)?.label.toLowerCase() : "";
-  const langLabel = (v: string) => LANGS.find((l) => l.value === v)?.label ?? v;
 
   return (
     <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-5xl flex-col">
@@ -215,35 +206,26 @@ export default function CriacaoPage() {
         <CardContent className="flex flex-col gap-6">
           {step === 0 && (
             <>
-              <div className="grid gap-5 sm:grid-cols-[2fr_1fr]">
-                <Field
-                  label="Canal"
-                  hint={channels.length === 0 ? "Crie um canal primeiro, na tela Canais." : undefined}
-                >
-                  <SimpleSelect
-                    value={channelId ? String(channelId) : null}
-                    onChange={(v) => {
-                      const ch = channels.find((x) => x.id === Number(v));
-                      if (ch) pickChannel(ch);
-                    }}
-                    options={channels.map((x) => ({ value: String(x.id), label: x.name }))}
-                  />
-                </Field>
-                <Field label="Idioma do roteiro / narração">
-                  <SimpleSelect
-                    value={c?.language ?? null}
-                    onChange={(v) => set("language", v)}
-                    options={LANGS}
-                    disabled={!c}
-                  />
-                </Field>
-              </div>
+              <Field
+                label="Canal"
+                hint={channels.length === 0 ? "Crie um canal primeiro, na tela Canais." : undefined}
+              >
+                <SimpleSelect
+                  value={channelId ? String(channelId) : null}
+                  onChange={(v) => {
+                    const ch = channels.find((x) => x.id === Number(v));
+                    if (ch) pickChannel(ch);
+                  }}
+                  options={channels.map((x) => ({ value: String(x.id), label: x.name }))}
+                  className="sm:w-96"
+                />
+              </Field>
               <Field label="Título">
                 <Input value={title} onChange={(e) => setTitle(e.target.value)} />
               </Field>
               <Field
                 label="Roteiro"
-                hint={`${words} palavras · duração estimada ≈ ${fmtDuration((words / wpm) * 60)}`}
+                hint={`${words} palavras · duração estimada ≈ ${fmtDuration((words / WPM) * 60)} · o idioma é detectado no roteiro`}
               >
                 <Textarea value={script} onChange={(e) => setScript(e.target.value)} className="min-h-72" />
               </Field>
@@ -316,38 +298,14 @@ export default function CriacaoPage() {
                   ))}
                 </div>
               </Field>
-              <Field
-                label="Estilo visual"
-                hint="Texto livre, usado nas buscas, na geração de imagens e no ranqueamento dos clipes."
-              >
-                <Textarea
-                  value={c.visual_style}
-                  onChange={(e) => set("visual_style", e.target.value)}
-                  placeholder="noturno, granulado, tons frios"
-                  rows={3}
-                />
-              </Field>
-              <Field
-                label="Representação de época"
-                hint={`Vale para roteiros que se passam no passado: ${
-                  PERIOD_LOOKS.find((m) => m.value === c.period_look)?.hint
-                }.`}
-              >
-                <SimpleSelect
-                  value={c.period_look}
-                  onChange={(v) => set("period_look", v as PeriodLook)}
-                  options={PERIOD_LOOKS}
-                  className="sm:w-80"
-                />
-              </Field>
-              <Field label="Idioma das buscas" hint="Os bancos de vídeo respondem melhor em inglês.">
-                <SimpleSelect
-                  value={c.search_language}
-                  onChange={(v) => set("search_language", v)}
-                  options={LANGS}
-                  className="sm:w-64"
-                />
-              </Field>
+              <p className="flex items-start gap-2 rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                <Sparkles className="mt-0.5 size-4 shrink-0" />
+                <span>
+                  Estilo visual, época e sua representação, idioma da narração e buscas (sempre em inglês) são
+                  interpretados automaticamente a partir do roteiro: o sistema lê o texto inteiro, entende a história,
+                  o lugar, o tempo e o tom, e monta o vídeo em cima disso.
+                </span>
+              </p>
             </>
           )}
 
@@ -438,17 +396,13 @@ IA   ${fmtDuration(preview.ai)}  →  ${aiLabel}`}
                 <dt className="text-muted-foreground">Título</dt>
                 <dd>{title}</dd>
                 <dt className="text-muted-foreground">Roteiro</dt>
-                <dd>
-                  {words} palavras · {langLabel(c.language)}
-                </dd>
+                <dd>{words} palavras · idioma detectado automaticamente</dd>
                 <dt className="text-muted-foreground">Áudio</dt>
                 <dd>{audioMode === "upload" ? audioFile?.name : `Narrador ${c.tts_voice_name ?? "—"}`}</dd>
                 <dt className="text-muted-foreground">Direção</dt>
                 <dd>{directions.find((d) => d.id === c.direction)?.name}</dd>
-                <dt className="text-muted-foreground">Estilo visual</dt>
-                <dd>{c.visual_style || "—"}</dd>
-                <dt className="text-muted-foreground">Buscas</dt>
-                <dd>{langLabel(c.search_language)}</dd>
+                <dt className="text-muted-foreground">Estilo visual e época</dt>
+                <dd>Interpretados do roteiro · buscas em inglês</dd>
                 <dt className="text-muted-foreground">Composição</dt>
                 <dd>
                   Real {c.real_pct}% (YouTube {c.youtube_pct}% / Bancos {100 - c.youtube_pct}%) · IA {100 - c.real_pct}%
@@ -468,8 +422,7 @@ IA   ${fmtDuration(preview.ai)}  →  ${aiLabel}`}
                 </dd>
                 <dt className="text-muted-foreground">Época</dt>
                 <dd>
-                  {PERIOD_LOOKS.find((m) => m.value === c.period_look)?.label} · Cor de época{" "}
-                  {c.period_grade ? "sim" : "não"} · Card de lugar e data {c.context_cards ? "sim" : "não"}
+                  Cor de época {c.period_grade ? "sim" : "não"} · Card de lugar e data {c.context_cards ? "sim" : "não"}
                 </dd>
               </dl>
 
@@ -548,8 +501,8 @@ IA   ${fmtDuration(preview.ai)}  →  ${aiLabel}`}
                 <span>
                   <span className="font-medium">Salvar estas configurações como padrão do canal {channel.name}</span>
                   <span className="block text-xs text-muted-foreground">
-                    Idiomas, narrador, direção, estilo visual, composição, ritmo e representação de época vêm
-                    preenchidos assim nos próximos vídeos deste canal.
+                    Narrador, direção, composição, ritmo e acabamento vêm preenchidos assim nos próximos vídeos deste
+                    canal.
                   </span>
                 </span>
               </label>

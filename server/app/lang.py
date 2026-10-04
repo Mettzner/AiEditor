@@ -55,16 +55,3 @@ def is_mismatch(text: str, target: str) -> bool:
     conf = _confidences(text)
     top = max(conf, key=conf.get)
     return top != target and conf.get(target, 0.0) < 0.15 and conf[top] >= 0.4
-
-
-def resolve_video_language(preset_language: str | None, script: str) -> tuple[str, str | None]:
-    """Idioma do vídeo: o do preset, a menos que o roteiro esteja claramente em outro idioma.
-
-    Devolve (video_language, idioma_detectado_quando_diverge).
-    """
-    detected = detect(script)
-    if not preset_language:
-        return detected or "en", None
-    if detected and detected != preset_language:
-        return detected, detected
-    return preset_language, None

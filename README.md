@@ -89,6 +89,8 @@ Artefatos de cada produção em `data/jobs/<id>/`: `audio/narration.wav`, `trans
 | TTS Darkvi, upload de áudio, loudnorm | pronto (formatos de resposta da Darkvi a confirmar) |
 | Transcrição faster-whisper + alinhamento ao roteiro + fallback SRT | pronto |
 | Planejamento com Claude (saída estruturada) + fallback determinístico | pronto |
+| Interpretação do roteiro: Bíblia de Contexto com resumo, intenção, gênero e estrutura narrativa (raciocínio alto, 1 chamada por vídeo); cada cena declara o que transmite e quais personagens aparecem (aparência fixa) | pronto |
+| Automático, sem campo na tela: idioma (detectado no roteiro), buscas (inglês), estilo visual e representação de época (decididos pela Bíblia) | pronto |
 | Seleção econômica: cache 7 dias, filtro técnico, top 8 por texto, folha de miniaturas no Gemini (1–2 chamadas/cena) | pronto |
 | YouTube CC com cota (fuso do Pacífico, 403 reativo) e fallback YouTube → bancos → fotos | pronto |
 | Imagens IA via Darkvi com rate limiter 5/min e queda para bancos | pronto (adiantado da Fase 3) |
