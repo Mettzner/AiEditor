@@ -76,7 +76,7 @@ Os testes usam banco temporário e provedores simulados (sem rede e sem gastar c
   retomável (o retry pula as etapas concluídas).
 - `server/app/providers/`: adapters por categoria (darkvi, stock, llm, storage, music...).
 - `server/app/directions/`: direções como plugins (`manifest.json`, `prompt.md`, `overlays.py`).
-- `data/` (fora do git): SQLite, settings.json, cache, jobs, músicas. Chaves ficam no Windows Credential Manager.
+- `data/` (fora do git): SQLite, settings.json, cache, jobs, músicas, efeitos sonoros (`sfx/`). Chaves ficam no Windows Credential Manager.
 
 Artefatos de cada produção em `data/jobs/<id>/`: `audio/narration.wav`, `transcript.json`, `units.json`,
 `plan.json`, `selection.json`, `assets/`, `timeline.json`, `subs.ass`, `render/`, `output/final.mp4`.
@@ -93,6 +93,8 @@ Artefatos de cada produção em `data/jobs/<id>/`: `audio/narration.wav`, `trans
 | YouTube CC com cota (fuso do Pacífico, 403 reativo) e fallback YouTube → bancos → fotos | pronto |
 | Imagens IA via Darkvi com rate limiter 5/min e queda para bancos | pronto (adiantado da Fase 3) |
 | Direção Clássico com crossfade de capítulo, destaques e títulos | pronto (adiantado da Fase 4) |
+| Edição: transições por intenção (fade pelo preto, flash, dissolve), push-in em vídeo, moldura de foto, títulos animados (contador, máquina de escrever, letterbox), citação em tela cheia sincronizada, light leak, grão e vinheta | pronto |
+| Efeitos sonoros: Freesound (CC0) com chave, sintetizados sem ela; pasta `data/sfx/<categoria>/` aceita sons próprios | pronto |
 | Render x264 / AMF com fallback, legendas .ass, música da biblioteca com ducking | pronto |
 | Upload resumable para o Drive via OAuth | pronto (não testado sem conta) |
 | Vídeo de IA (fal.ai), ElevenLabs Music | próximas fases |
