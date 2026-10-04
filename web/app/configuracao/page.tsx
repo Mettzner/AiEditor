@@ -296,7 +296,8 @@ export default function ConfiguracaoPage() {
         <CardContent className="grid gap-4 sm:grid-cols-3">
           {(
             [
-              ["plan", "Brief + planejamento das cenas"],
+              ["bible", "Interpretação do roteiro (Bíblia de Contexto)"],
+              ["plan", "Planejamento das cenas"],
               ["rewrite", "Reescrita de queries"],
               ["overlay", "Correção de idioma dos overlays"],
             ] as const
@@ -313,6 +314,16 @@ export default function ConfiguracaoPage() {
               />
             </Field>
           ))}
+          <Field
+            label="Esforço da interpretação"
+            hint="Uma chamada por vídeo lendo o roteiro inteiro: mais raciocínio entende melhor a história e o contexto."
+          >
+            <SimpleSelect
+              value={s.llm?.bible?.effort ?? "high"}
+              onChange={(v) => patch(["llm", "bible", "effort"], v)}
+              options={["medium", "high", "xhigh"].map((e) => ({ value: e, label: e }))}
+            />
+          </Field>
           <Field label="Esforço do planejamento" hint="Raciocínio é cobrado como saída; baixo passou nos testes.">
             <SimpleSelect
               value={s.llm?.plan?.effort ?? "low"}

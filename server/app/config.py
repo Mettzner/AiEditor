@@ -59,6 +59,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Modelo por etapa (OTIMIZACAO_CUSTO_CLAUDE.md §2). thinking: "adaptive" (com effort) ou "off".
     "llm": {
         "plan": {"provider": "anthropic", "model": "claude-sonnet-5-5", "effort": "low", "thinking": "adaptive"},
+        # Bíblia de Contexto: 1 chamada por vídeo lendo o roteiro inteiro; mais raciocínio = interpretação melhor
+        "bible": {"provider": "anthropic", "model": "claude-sonnet-5-5", "effort": "high", "thinking": "adaptive"},
         "direct": {"provider": "anthropic", "model": "claude-sonnet-5-5", "effort": "low", "thinking": "off"},
         "rewrite": {"provider": "anthropic", "model": "claude-haiku-4-5", "effort": None, "thinking": "off"},
         "overlay": {"provider": "anthropic", "model": "claude-haiku-4-5", "effort": None, "thinking": "off"},
