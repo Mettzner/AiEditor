@@ -10,6 +10,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import Callable
 
+from sqlalchemy.exc import IntegrityError
+
 from ...config import load_settings
 from ...db import session_scope
 from ...models import SearchCache, now
@@ -48,7 +50,10 @@ def cached_search(provider: str, kind: str, query: str, per_page: int, lang: str
         row.results = [c.to_dict() for c in results]
         row.created_at = now()
         s.add(row)
-        s.commit()
+        try:
+            s.commit()
+        except IntegrityError:  # outra cena gravou a mesma busca ao mesmo tempo: o resultado já está no cache
+            s.rollback()
     return results
 
 
