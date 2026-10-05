@@ -305,8 +305,11 @@ def run(ctx: JobContext) -> str:
     else:
         from concurrent.futures import ThreadPoolExecutor
 
+        # a 1ª janela sozinha grava o prefixo (sistema + roteiro, ~23 mil tokens) no cache do prompt; as demais,
+        # em paralelo, leem do cache a 1/12 do preço em vez de cada uma gravar de novo
+        first = plan_window(0, bible)
         with ThreadPoolExecutor(max_workers=4) as pool:
-            results = list(pool.map(lambda wi: plan_window(wi, bible), range(len(windows))))
+            results = [first, *pool.map(lambda wi: plan_window(wi, bible), range(1, len(windows)))]
     drafts: list[SceneDraft] = [sc for r in results for sc in r.scenes]
     mood = next((r.music_mood for r in results if r.music_mood), None)
 
