@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ExternalLink, FolderOpen, RotateCcw, Sparkles, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, Copy, ExternalLink, FolderOpen, RotateCcw, Sparkles, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,7 @@ const SEVERITY: Record<Severity, { label: string; className: string }> = {
 
 export function ProductionCard({ p }: { p: Production }) {
   const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const status = STATUS[p.status];
   const active = p.status === "running" || p.status === "queued" || p.status === "cancel_requested";
 
@@ -53,6 +54,17 @@ export function ProductionCard({ p }: { p: Production }) {
     }
   }
 
+  async function copyTitle() {
+    try {
+      await navigator.clipboard.writeText(p.title);
+      setCopied(true);
+      toast.success("Título copiado");
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      toast.error("Não foi possível copiar o título");
+    }
+  }
+
   const times = ["select", "generate", "render"].filter((k) => p.step_seconds?.[k] != null);
 
   return (
@@ -62,9 +74,21 @@ export function ProductionCard({ p }: { p: Production }) {
           {/* linha principal: identificação · progresso · status · ações */}
           <div className="flex items-center gap-4">
             <div className="w-52 min-w-0 shrink-0">
-              <h3 className="truncate font-medium leading-tight" title={p.title}>
-                {p.title}
-              </h3>
+              <div className="flex min-w-0 items-center gap-1">
+                <h3 className="truncate font-medium leading-tight" title={p.title}>
+                  {p.title}
+                </h3>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="shrink-0 text-muted-foreground"
+                  aria-label="Copiar título"
+                  title="Copiar título"
+                  onClick={copyTitle}
+                >
+                  {copied ? <Check /> : <Copy />}
+                </Button>
+              </div>
               <p className="truncate text-xs text-muted-foreground">
                 {p.channel_name ?? "—"} · #{p.id}
               </p>
