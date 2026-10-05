@@ -8,13 +8,14 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlmodel import Session, delete, select
+from sqlmodel import Session, select
 
 from ..config import job_dir, load_settings
 from ..db import get_session, session_scope
 from ..estimate import estimate
 from ..lang import detect as detect_language
 from ..pipeline.report import build_report
+from ..purge import PurgeError, purge_production, remove_job_files
 from ..models import CREATION_FIELDS, Channel, Issue, Preset, Production, ProductionConfig, ProductionStep, now
 
 router = APIRouter(tags=["productions"])
@@ -189,6 +190,8 @@ async def create_production(
     s.add(p)
     s.commit()
     s.refresh(p)
+    # o SQLite reaproveita o id da última produção excluída: a pasta do job precisa começar vazia
+    remove_job_files(p.id)  # type: ignore[arg-type]
     if audio_mode == "upload":
         dest = job_dir(p.id) / "input" / f"narration.{ext}"  # type: ignore[arg-type]
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -242,11 +245,10 @@ def delete_production(production_id: int, s: Session = Depends(get_session)):
     p = s.get(Production, production_id)
     if not p:
         raise HTTPException(404, "Produção não encontrada")
-    if p.status in ("running", "cancel_requested"):
-        raise HTTPException(409, "Cancele a produção antes de excluir")
-    s.exec(delete(Issue).where(Issue.production_id == production_id))
-    s.exec(delete(ProductionStep).where(ProductionStep.production_id == production_id))
-    s.delete(p)
+    try:
+        purge_production(s, p)  # registros, pasta do job e ativos usados
+    except PurgeError as e:
+        raise HTTPException(409, str(e)) from e
     s.commit()
     return {"ok": True}
 

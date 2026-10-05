@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Progress } from "@/components/ui/progress";
+import { ConfirmDelete } from "@/components/confirm-delete";
 import { DirectionDialog } from "@/components/direction-dialog";
 import { api, fmtDuration, fmtMoney, type Production, type Severity } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -100,14 +101,18 @@ export function ProductionCard({ p }: { p: Production }) {
                 </Button>
               )}
               {!active && (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Excluir"
-                  onClick={() => act(() => api.deleteProduction(p.id), "Produção excluída")}
+                <ConfirmDelete
+                  title={`Excluir "${p.title}"?`}
+                  trigger={<Button variant="ghost" size="icon-sm" aria-label="Excluir" />}
+                  label={<Trash2 />}
+                  onConfirm={() => act(() => api.deleteProduction(p.id), "Produção excluída")}
                 >
-                  <Trash2 />
-                </Button>
+                  <p>
+                    Apaga a produção e todos os arquivos dela neste computador: narração, cenas baixadas, plano e
+                    vídeo final. Não dá para desfazer.
+                  </p>
+                  {p.drive_url && <p className="mt-2">A cópia enviada ao Google Drive não é apagada.</p>}
+                </ConfirmDelete>
               )}
             </div>
           </div>

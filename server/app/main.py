@@ -14,7 +14,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import paths
 from .api import channels, productions, settings, system
-from .db import init_db
+from .db import init_db, session_scope
+from .purge import purge_orphans
 
 
 class SpaStaticFiles(StaticFiles):
@@ -33,6 +34,8 @@ class SpaStaticFiles(StaticFiles):
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    with session_scope() as s:  # sobras de exclusões antigas, que apagavam só o registro
+        purge_orphans(s)
     yield
 
 

@@ -339,7 +339,8 @@ export const api = {
   createChannel: (name: string, preset: Preset) => request<Channel>("/channels", json("POST", { name, preset })),
   updateChannel: (id: number, name: string, preset: Preset) =>
     request<Channel>(`/channels/${id}`, json("PUT", { name, preset })),
-  deleteChannel: (id: number) => request(`/channels/${id}`, { method: "DELETE" }),
+  deleteChannel: (id: number) =>
+    request<{ ok: boolean; productions_removed: number }>(`/channels/${id}`, { method: "DELETE" }),
   uploadReference: (id: number, file: File) => {
     const fd = new FormData();
     fd.append("file", file);

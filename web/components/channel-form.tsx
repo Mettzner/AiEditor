@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
+import { ConfirmDelete } from "@/components/confirm-delete";
 import { Field, SimpleSelect } from "@/components/fields";
 import { VoicePicker } from "@/components/voice-picker";
 import { api, DEFAULT_PRESET, type Channel, type Preset } from "@/lib/api";
@@ -71,8 +72,8 @@ export function ChannelForm({
   async function remove() {
     if (!channel) return;
     try {
-      await api.deleteChannel(channel.id);
-      toast.success("Canal excluído");
+      const { productions_removed: n } = await api.deleteChannel(channel.id);
+      toast.success(n ? `Canal excluído com ${n} produç${n === 1 ? "ão" : "ões"}` : "Canal excluído");
       onDeleted();
     } catch (e) {
       toast.error((e as Error).message);
@@ -227,9 +228,19 @@ export function ChannelForm({
 
       <div className="flex justify-between border-t pt-5">
         {channel ? (
-          <Button variant="destructive" onClick={remove}>
-            <Trash2 /> Excluir canal
-          </Button>
+          <ConfirmDelete
+            title={`Excluir o canal "${channel.name}"?`}
+            trigger={<Button variant="destructive" />}
+            label={
+              <>
+                <Trash2 /> Excluir canal
+              </>
+            }
+            onConfirm={remove}
+          >
+            Apaga o canal e todas as produções dele, com os arquivos neste computador (narração, cenas e vídeos).
+            Não dá para desfazer. As cópias já enviadas ao Google Drive não são apagadas.
+          </ConfirmDelete>
         ) : (
           <span />
         )}

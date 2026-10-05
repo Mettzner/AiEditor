@@ -1,6 +1,8 @@
 """Etapa 1: áudio (TTS Darkvi ou upload) → audio/narration.wav 48 kHz normalizado (§6.1)."""
 from __future__ import annotations
 
+import hashlib
+
 from ..providers.darkvi import tts
 from ..providers.darkvi.client import DarkviError
 from ..worker.context import JobContext, StepError
@@ -42,6 +44,18 @@ def _to_tts_cache(text: str, voice: str, mp3, srt) -> None:
         shutil.copy(srt, c_srt)
 
 
+def _drop_stale_chunk(ctx: JobContext, i: int, chunk: str, voice: str) -> None:
+    """O trecho já baixado só vale no retry se for do mesmo texto e voz. Arquivos de outra narração (pasta de um
+    job antigo com o mesmo id, roteiro editado) são apagados para o trecho ser gerado de novo."""
+    key = hashlib.sha256(f"{voice}|{chunk}".encode()).hexdigest()
+    key_file = ctx.path("audio", f"tts_{i:02d}.key")
+    if key_file.exists() and key_file.read_text(encoding="utf-8").strip() == key:
+        return
+    for ext in ("mp3", "srt", "json"):
+        ctx.path("audio", f"tts_{i:02d}.{ext}").unlink(missing_ok=True)
+    key_file.write_text(key, encoding="utf-8")
+
+
 def _normalize(src, dest) -> None:
     ffmpeg.run(["-i", str(src), "-af", "loudnorm=I=-14:TP=-1.5:LRA=11", "-ar", "48000", "-ac", "2",
                 "-c:a", "pcm_s16le", str(dest)])
@@ -65,6 +79,7 @@ def run(ctx: JobContext) -> str:
         for i, chunk in enumerate(chunks):
             mp3 = ctx.path("audio", f"tts_{i:02d}.mp3")
             srt = ctx.path("audio", f"tts_{i:02d}.srt")
+            _drop_stale_chunk(ctx, i, chunk, voice)
             if mp3.exists():
                 pass  # já baixado nesta produção (retry)
             elif _from_tts_cache(chunk, voice, mp3, srt):

@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 from ..config import DATA_DIR
 from ..db import get_session
 from ..models import Channel, Preset
+from ..purge import PurgeError, purge_channel
 
 router = APIRouter(prefix="/channels", tags=["channels"])
 
@@ -67,9 +68,12 @@ def delete_channel(channel_id: int, s: Session = Depends(get_session)):
     c = s.get(Channel, channel_id)
     if not c:
         raise HTTPException(404, "Canal não encontrado")
-    s.delete(c)
+    try:
+        removed = purge_channel(s, c)  # com todas as produções do canal, arquivos incluídos
+    except PurgeError as e:
+        raise HTTPException(409, str(e)) from e
     s.commit()
-    return {"ok": True}
+    return {"ok": True, "productions_removed": removed}
 
 
 @router.post("/{channel_id}/reference")
