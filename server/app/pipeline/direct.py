@@ -23,7 +23,7 @@ def fix_overlay_language(ctx: JobContext, overlays: list[dict], scenes: list[dic
     """Nenhum texto na tela em idioma diferente do vídeo (§11.4): todos os textos errados são corrigidos numa
     única chamada barata (Haiku); o que continuar errado é descartado."""
     from ..lang import is_mismatch, name
-    from ..providers.llm.base import call_llm
+    from ..providers.llm.base import call_llm, failed_usage
     from .visual import OVERLAY_FIX_SYSTEM, OverlayFixBatch, compact_json
 
     lang = ctx.config.lang
@@ -45,6 +45,8 @@ def fix_overlay_language(ctx: JobContext, overlays: list[dict], scenes: list[dic
         fixed = {it.index: it.text.strip()[:60] for it in out.items}
     except Exception as e:  # noqa: BLE001
         err = repr(e)
+        if (paid := failed_usage(e)) is not None:
+            ctx.record_llm(paid, step="direct")
     kept = []
     for i, o in enumerate(overlays):
         if i not in wrong:

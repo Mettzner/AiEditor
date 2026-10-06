@@ -63,6 +63,43 @@ def _cache_key(task: str, model: str, system: str, context: str | None, user: st
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+class LLMCallFailed(ProviderError):
+    """Resposta cobrada mas inútil (cortada por max_tokens, recusa ou JSON inválido).
+
+    `usage` (preenchido por structured) leva o custo junto, para quem chamou registrá-lo na produção;
+    `truncated` diz que repetir o mesmo pedido corta de novo: é preciso pedir menos por chamada."""
+
+    def __init__(self, message: str, response, truncated: bool = False):
+        super().__init__(message)
+        self.response = response
+        self.truncated = truncated
+        self.usage: LLMUsage | None = None
+
+
+def _with_format(params: dict, schema: type) -> dict:
+    """Pedido com saída estruturada no esquema (o mesmo formato que o messages.parse do SDK monta)."""
+    from anthropic.lib._parse._transform import transform_schema
+    from pydantic import TypeAdapter
+
+    body = dict(params)
+    body["output_config"] = {**body.get("output_config", {}), "format": {
+        "type": "json_schema", "schema": transform_schema(TypeAdapter(schema).json_schema())}}
+    return body
+
+
+def _parse_message(msg, schema: type[T]) -> T:
+    if msg.stop_reason == "refusal":
+        raise LLMCallFailed(f"Claude recusou a solicitação: {getattr(msg, 'stop_details', None)}", msg)
+    if msg.stop_reason == "max_tokens":
+        raise LLMCallFailed(f"Resposta do Claude cortada por max_tokens ({msg.usage.output_tokens} tokens de saída)",
+                            msg, truncated=True)
+    text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+    try:
+        return schema.model_validate_json(text)
+    except ValueError as e:
+        raise LLMCallFailed(f"Claude não devolveu JSON válido para o schema: {str(e)[:200]}", msg) from e
+
+
 class AnthropicLLM:
     id = "anthropic"
 
@@ -119,10 +156,17 @@ class AnthropicLLM:
                     return schema.model_validate(hit.result), LLMUsage(model=model, task=task, local_cache=True)
         params = self._params(model, system, user, context, effort, thinking, max_tokens, cache_ttl)
         t = time.perf_counter()
-        if batch:
-            parsed, resp = self._run_batch(params, schema, task)
-        else:
-            parsed, resp = self._run(params, schema)
+        try:
+            if batch:
+                parsed, resp = self._run_batch(params, schema, task)
+            else:
+                parsed, resp = self._run(params, schema)
+        except LLMCallFailed as e:
+            # a resposta foi cobrada mesmo inútil: o uso vai junto no erro para entrar no custo da produção
+            e.usage = _usage_from(e.response, model, task, time.perf_counter() - t, batch)
+            log.warning("claude %s %s falhou (%s): in=%d out=%d US$%.4f", task, model, e, e.usage.input_tokens,
+                        e.usage.output_tokens, e.usage.cost)
+            raise
         usage = _usage_from(resp, model, task, time.perf_counter() - t, batch)
         log.info("claude %s %s: in=%d out=%d cache_w=%d cache_r=%d US$%.4f %.1fs", task, model, usage.input_tokens,
                  usage.output_tokens, usage.cache_creation_input_tokens, usage.cache_read_input_tokens, usage.cost,
@@ -133,30 +177,21 @@ class AnthropicLLM:
         return parsed, usage
 
     def _run(self, params: dict, schema: type[T]):
+        # create + validação aqui (não messages.parse): o parse do SDK lança o erro de JSON antes de devolver a
+        # resposta, e uma resposta cortada sumia sem o uso cobrado e sem o motivo (max_tokens)
         client = self._client()
+        body = _with_format(params, schema)
         if self._uses_fallbacks(params["model"]):
-            resp = client.beta.messages.parse(**params, output_format=schema,
-                                              betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+            resp = client.beta.messages.create(**body, betas=["server-side-fallback-2026-07-01"], fallbacks="default")
         else:
-            resp = client.messages.parse(**params, output_format=schema)
-        if resp.stop_reason == "refusal":
-            raise ProviderError(f"Claude recusou a solicitação: {resp.stop_details}")
-        if resp.stop_reason == "max_tokens":
-            raise ProviderError("Resposta do Claude cortada por max_tokens")
-        if resp.parsed_output is None:
-            raise ProviderError("Claude não devolveu JSON válido para o schema")
-        return resp.parsed_output, resp
+            resp = client.messages.create(**body)
+        return _parse_message(resp, schema), resp
 
     # ---------------------------------------------------------------- Batch API (modo econômico)
     def _run_batch(self, params: dict, schema: type[T], task: str):
         """Envia 1 pedido pela Message Batches API (50% mais barata, assíncrona) e espera o resultado."""
-        from anthropic.lib._parse._transform import transform_schema
-        from pydantic import TypeAdapter
-
         client = self._client()
-        body = dict(params)
-        body["output_config"] = {**body.get("output_config", {}), "format": {
-            "type": "json_schema", "schema": transform_schema(TypeAdapter(schema).json_schema())}}
+        body = _with_format(params, schema)
         batch = client.messages.batches.create(requests=[{"custom_id": task or "req", "params": body}])
         log.info("lote %s enviado (%s)", batch.id, task)
         while True:
@@ -168,8 +203,7 @@ class AnthropicLLM:
             if item.result.type != "succeeded":
                 raise ProviderError(f"Lote {batch.id}: {item.result.type}")
             msg = item.result.message
-            text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
-            return schema.model_validate_json(text), msg
+            return _parse_message(msg, schema), msg
         raise ProviderError(f"Lote {batch.id} sem resultado")
 
     def test(self) -> dict:

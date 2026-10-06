@@ -19,8 +19,11 @@ class Out(BaseModel):
     answer: str
 
 
-def fake_response(parsed, in_t=1000, out_t=50, cw=0, cr=0):
-    return SimpleNamespace(parsed_output=parsed, stop_reason="end_turn", stop_details=None,
+def fake_response(parsed, in_t=1000, out_t=50, cw=0, cr=0, stop="end_turn", text=None):
+    if text is None:
+        text = parsed.model_dump_json() if parsed is not None else ""
+    return SimpleNamespace(parsed_output=parsed, stop_reason=stop, stop_details=None,
+                           content=[SimpleNamespace(type="text", text=text)],
                            usage=SimpleNamespace(input_tokens=in_t, output_tokens=out_t,
                                                  cache_creation_input_tokens=cw, cache_read_input_tokens=cr))
 
@@ -86,7 +89,7 @@ def test_cache_local_de_respostas(env, monkeypatch):
     calls = []
 
     class FakeMessages:
-        def parse(self, **kw):
+        def create(self, **kw):
             calls.append(kw)
             return fake_response(Out(answer="ok"))
 
@@ -99,6 +102,65 @@ def test_cache_local_de_respostas(env, monkeypatch):
     again, u2 = llm.structured(**kw)
     assert first.answer == again.answer == "ok" and len(calls) == 1
     assert not u1.local_cache and u2.local_cache and u2.cost == 0
+
+
+
+# ---------------------------------------------------------------- tentativas cobradas que falham
+def _client_returning(resp, calls):
+    class FakeMessages:
+        def create(self, **kw):
+            calls.append(kw)
+            return resp
+
+    return SimpleNamespace(messages=FakeMessages(), beta=SimpleNamespace(messages=FakeMessages()))
+
+
+def test_resposta_cortada_leva_o_uso_cobrado_no_erro(env, monkeypatch):
+    import pytest
+
+    calls = []
+    cut = fake_response(None, in_t=2000, out_t=16000, stop="max_tokens", text='{"answer":"cort')
+    monkeypatch.setattr(A.AnthropicLLM, "_client", lambda self: _client_returning(cut, calls))
+    with pytest.raises(A.LLMCallFailed) as err:
+        A.AnthropicLLM().structured(model="claude-sonnet-5-5", system="S", user="corta 1", schema=Out, task="plan")
+    assert err.value.truncated and err.value.usage.output_tokens == 16000
+    assert round(err.value.usage.cost, 6) == round((2000 * 2 + 16000 * 10) / 1e6, 6)
+    assert calls[0]["output_config"]["format"]["type"] == "json_schema"  # saída estruturada sem o parse do SDK
+
+
+def test_json_invalido_tambem_leva_o_uso(env, monkeypatch):
+    import pytest
+
+    bad = fake_response(None, in_t=100, out_t=10, text="não é json")
+    monkeypatch.setattr(A.AnthropicLLM, "_client", lambda self: _client_returning(bad, []))
+    with pytest.raises(A.LLMCallFailed) as err:
+        A.AnthropicLLM().structured(model="claude-haiku-4-5", system="S", user="json 1", schema=Out, task="rewrite",
+                                    thinking="off")
+    assert not err.value.truncated and err.value.usage.input_tokens == 100
+
+
+def test_lote_cortado_nao_vira_erro_de_json_sem_custo(env, monkeypatch):
+    import pytest
+
+    cut = fake_response(None, in_t=50, out_t=16000, stop="max_tokens", text='{"answer":"cort')
+
+    class FakeBatches:
+        def create(self, **kw):
+            return SimpleNamespace(id="b1", processing_status="ended")
+
+        def retrieve(self, _id):
+            return SimpleNamespace(id="b1", processing_status="ended")
+
+        def results(self, _id):
+            return [SimpleNamespace(result=SimpleNamespace(type="succeeded", message=cut))]
+
+    client = SimpleNamespace(messages=SimpleNamespace(batches=FakeBatches()))
+    monkeypatch.setattr(A.AnthropicLLM, "_client", lambda self: client)
+    with pytest.raises(A.LLMCallFailed) as err:
+        A.AnthropicLLM().structured(model="claude-sonnet-5-5", system="S", user="lote 1", schema=Out, task="plan",
+                                    batch=True)
+    assert err.value.truncated and err.value.usage.batch
+    assert round(err.value.usage.cost, 6) == round((50 * 2 + 16000 * 10) / 1e6 / 2, 6)
 
 
 def test_reescrita_de_varias_cenas_numa_unica_chamada(env, monkeypatch):

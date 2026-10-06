@@ -60,3 +60,10 @@ def call_llm(task: str, *, system: str, user: str, schema: type[T], context: str
     return llm.structured(model=cfg["model"], system=system, user=user, schema=schema, effort=cfg.get("effort"),
                           max_tokens=max_tokens, context=context, task=task, thinking=cfg.get("thinking", "adaptive"),
                           batch=batch, cache_ttl=cfg.get("cache_ttl", "5m"))
+
+
+def failed_usage(error: BaseException) -> LLMUsage | None:
+    """Uso cobrado de uma chamada que falhou (resposta cortada, recusa, JSON inválido); None se nada foi cobrado.
+
+    Quem chama registra esse uso na produção: a Anthropic cobra a tentativa mesmo sem resposta aproveitável."""
+    return getattr(error, "usage", None)

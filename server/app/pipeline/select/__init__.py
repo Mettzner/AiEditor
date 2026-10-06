@@ -35,7 +35,7 @@ from ...providers.darkvi import images as darkvi_images
 from ...providers.darkvi.client import DarkviError
 from ...providers.http import ProviderError, download
 from ...providers.llm import gemini
-from ...providers.llm.base import call_llm
+from ...providers.llm.base import call_llm, failed_usage
 from ...providers.stock import enabled_providers
 from ...providers.stock.archives import ARCHIVES
 from ...providers.youtube import client as youtube
@@ -275,6 +275,8 @@ class Selector:
             self.ctx.record_llm(usage, step="select")
         except Exception as e:  # noqa: BLE001
             log.warning("reescrita de queries em lote falhou: %s", e)
+            if (paid := failed_usage(e)) is not None:
+                self.ctx.record_llm(paid, step="select")
             return {}
         by_id = {it.scene_id: it for it in out.items}
         result = {}

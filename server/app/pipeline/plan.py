@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from ..directions import get_direction
 from ..lang import name as lang_name
-from ..providers.llm.base import call_llm
+from ..providers.llm.base import call_llm, failed_usage
 from ..worker.context import JobContext
 from .allocate import allocate
 from .context import (ContextBible, beat_for_unit, block_by_id, block_for_unit, finish_bible, neutral_bible,
@@ -233,6 +233,8 @@ def write_bible(ctx: JobContext, context: str, units: list[dict], economy: bool 
             ctx.record_llm(usage)
             return finish_bible(parsed.model_dump(), len(units), units)
         except Exception as e:  # noqa: BLE001
+            if (paid := failed_usage(e)) is not None:
+                ctx.record_llm(paid)
             if attempt == 1:
                 ctx.issue("STEP_FAILED", "Bíblia de Contexto falhou; usando um contexto atemporal neutro",
                           detail=repr(e), severity="warning")
@@ -287,6 +289,8 @@ def run(ctx: JobContext) -> str:
                 ctx.record_llm(usage)
                 return _validate(parsed, win[0]["i"], win[-1]["i"], media_style, bible)
             except Exception as e:  # noqa: BLE001
+                if (paid := failed_usage(e)) is not None:
+                    ctx.record_llm(paid)
                 if attempt == 1:
                     ctx.issue("STEP_FAILED", f"Planejamento por IA falhou na parte {wi + 1}; usando agrupamento "
                               "automático", detail=repr(e), severity="warning")
