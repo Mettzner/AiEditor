@@ -509,6 +509,9 @@ IA   ${fmtDuration(preview.ai)}  →  ${aiLabel}`}
                       <dt>Tempo</dt>
                       <dd className="text-right">≈ {estimate.time_minutes} min</dd>
                     </dl>
+                    {estimate.cost.budget_warning && (
+                      <p className="mt-2 text-xs text-amber-300">{estimate.cost.budget_warning}</p>
+                    )}
                     <details className="mt-2 text-xs text-muted-foreground">
                       <summary className="cursor-pointer">Como foi calculado</summary>
                       <ul className="mt-1 list-disc space-y-0.5 pl-4">

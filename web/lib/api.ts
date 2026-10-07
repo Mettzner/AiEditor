@@ -249,6 +249,7 @@ export interface Estimate {
     currency: string;
     prices_as_of: string;
     vision_sheets: [number, number];
+    budget_warning: string | null;
   };
   quotas: {
     darkvi_images_needed: number;

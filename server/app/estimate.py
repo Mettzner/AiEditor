@@ -117,8 +117,13 @@ def estimate(config: ProductionConfig, script: str, audio_seconds: float | None 
         "pela OpenAI/Claude (faixa alta)",
         "TTS e imagens da Darkvi pelo preço cadastrado (incluso no plano = US$ 0)",
     ]
+    budget_warning = None
     if budget_cap:
         assumptions.append(f"a faixa alta respeita o teto de US$ {budget_cap:.2f} de IA por produção")
+        if llm_high > budget_cap * 0.8:  # Bíblia e cenas também respeitam o teto: acima dele, agrupamento automático
+            budget_warning = (f"O planejamento pode custar até US$ {llm_high:.2f}, perto ou acima do teto de "
+                              f"US$ {budget_cap:.2f}: se o teto for atingido, parte das cenas é agrupada "
+                              "automaticamente. Aumente o teto em Configuração para roteiros longos.")
     if economy:
         assumptions.append("modo econômico: Bíblia e planejamento pela Batch API (50% nessas chamadas)")
     return {
@@ -138,6 +143,7 @@ def estimate(config: ProductionConfig, script: str, audio_seconds: float | None 
             "currency": "USD",
             "prices_as_of": PRICES_AS_OF,
             "vision_sheets": [sheets_low, sheets_high],
+            "budget_warning": budget_warning,
         },
         "quotas": {
             "darkvi_images_needed": ai_images,

@@ -249,3 +249,17 @@ def test_estimativa_tem_faixa_tarefas_e_hipoteses():
     assert {"bible", "plan", "rewrite", "overlay"} <= set(cost["by_task"])
     assert cost["by_task"]["plan"]["calls"][0] >= 4  # 45 unidades por janela
     assert cost["assumptions"] and cost["currency"] == "USD" and cost["prices_as_of"]
+
+
+def test_estimativa_avisa_quando_o_teto_pode_cortar_o_planejamento():
+    from app.config import update_settings
+    from app.estimate import estimate
+    from app.models import Preset, ProductionConfig
+
+    cfg = ProductionConfig(**Preset().model_dump(), title="t", channel_name="c")
+    assert estimate(cfg, "palavra " * 800)["cost"]["budget_warning"] is None
+    update_settings({"budget": {"max_usd_per_production": 0.5}})
+    try:
+        assert "teto" in estimate(cfg, "palavra " * 9000)["cost"]["budget_warning"]
+    finally:
+        update_settings({"budget": {"max_usd_per_production": 2.0}})
