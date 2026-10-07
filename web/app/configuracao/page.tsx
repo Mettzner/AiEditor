@@ -28,7 +28,12 @@ const KEYS: { id: string; label: string; test?: string; note?: string }[] = [
   },
   { id: "fal", label: "fal.ai (vídeo IA)", note: "Fase 3" },
   { id: "elevenlabs", label: "ElevenLabs (música)", note: "Fase 4" },
-  { id: "openai", label: "OpenAI", note: "opcional" },
+  {
+    id: "openai",
+    label: "OpenAI (ChatGPT)",
+    test: "openai",
+    note: "avalia clipes quando o Gemini fica sem cota, antes do Claude e bem mais barato",
+  },
 ];
 
 type Settings = SettingsPayload["settings"];
@@ -300,6 +305,7 @@ export default function ConfiguracaoPage() {
               ["plan", "Planejamento das cenas"],
               ["rewrite", "Reescrita de queries"],
               ["overlay", "Correção de idioma dos overlays"],
+              ["vision", "Avaliação de clipes e imagens (quando o Gemini não pode)"],
             ] as const
           ).map(([task, label]) => (
             <Field key={task} label={label}>
@@ -329,6 +335,33 @@ export default function ConfiguracaoPage() {
               value={s.llm?.plan?.effort ?? "low"}
               onChange={(v) => patch(["llm", "plan", "effort"], v)}
               options={["low", "medium", "high"].map((e) => ({ value: e, label: e }))}
+            />
+          </Field>
+          <Field
+            label="Teto de gasto por produção (US$)"
+            hint="Perto do teto, o Claude para de avaliar clipes e o resto das cenas é escolhido pelo texto. 0 = sem teto."
+          >
+            <Input
+              type="number"
+              min={0}
+              step={0.5}
+              value={s.budget?.max_usd_per_production ?? 2}
+              onChange={(e) => patch(["budget", "max_usd_per_production"], Number(e.target.value))}
+            />
+          </Field>
+          <Field
+            label="Quem avalia clipes e imagens"
+            hint="Sem avaliação visual, os clipes são escolhidos só pelo título (às cegas) e as imagens de IA não são conferidas."
+          >
+            <SimpleSelect
+              value={s.vision?.provider ?? "auto"}
+              onChange={(v) => patch(["vision", "provider"], v)}
+              options={[
+                { value: "auto", label: "Gemini → OpenAI → Claude (recomendado)" },
+                { value: "gemini", label: "Só Gemini" },
+                { value: "openai", label: "Só OpenAI" },
+                { value: "claude", label: "Só Claude" },
+              ]}
             />
           </Field>
           <Field label="Validade do cache do prompt" hint="1 h custa mais para gravar; vale se as etapas ficarem distantes.">
