@@ -10,6 +10,7 @@ reaproveitado byte a byte. Parâmetros de raciocínio iguais em todas as chamada
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -57,9 +58,11 @@ def _usage_from(resp, model: str, task: str, seconds: float, batch: bool = False
     return usage
 
 
-def _cache_key(task: str, model: str, system: str, context: str | None, user: str, schema: type, effort, thinking) -> str:
+def _cache_key(task: str, model: str, system: str, context: str | list[str] | None, user: str, schema: type, effort,
+               thinking, images: list[bytes] | None = None) -> str:
     raw = json.dumps([PROMPT_VERSION, task, model, system, context, user, schema.__name__,
-                      json.dumps(schema.model_json_schema(), sort_keys=True), effort, thinking],
+                      json.dumps(schema.model_json_schema(), sort_keys=True), effort, thinking,
+                      [hashlib.sha256(i).hexdigest() for i in images or []]],
                      ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -113,12 +116,15 @@ class AnthropicLLM:
     # ---------------------------------------------------------------- parâmetros por modelo
     @staticmethod
     def _params(model: str, system: str, user: str, context: str | list[str] | None, effort: str | None,
-                thinking: str, max_tokens: int, cache_ttl: str) -> dict:
+                thinking: str, max_tokens: int, cache_ttl: str, images: list[bytes] | None = None) -> dict:
         cc = {"type": "ephemeral"} if cache_ttl == "5m" else {"type": "ephemeral", "ttl": cache_ttl}
-        content = []
+        content: list[dict] = []
         for block in ([context] if isinstance(context, str) else context or []):
             if block:
                 content.append({"type": "text", "text": block, "cache_control": cc})
+        for img in images or []:  # imagens antes do texto que fala delas
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                                        "data": base64.standard_b64encode(img).decode()}})
         content.append({"type": "text", "text": user})
         params: dict = {
             "model": model, "max_tokens": max_tokens,
@@ -146,17 +152,17 @@ class AnthropicLLM:
     def structured(self, *, model: str, system: str, user: str, schema: type[T], effort: str | None = None,
                    max_tokens: int = 16000, context: str | list[str] | None = None, task: str = "",
                    thinking: str = "adaptive", use_cache: bool = True, batch: bool = False,
-                   cache_ttl: str = "5m") -> tuple[T, LLMUsage]:
+                   cache_ttl: str = "5m", images: list[bytes] | None = None) -> tuple[T, LLMUsage]:
         from ...db import session_scope
         from ...models import LlmCache
 
-        key = _cache_key(task, model, system, context, user, schema, effort, thinking)
+        key = _cache_key(task, model, system, context, user, schema, effort, thinking, images)
         if use_cache:
             with session_scope() as s:
                 hit = s.get(LlmCache, key)
                 if hit:
                     return schema.model_validate(hit.result), LLMUsage(model=model, task=task, local_cache=True)
-        params = self._params(model, system, user, context, effort, thinking, max_tokens, cache_ttl)
+        params = self._params(model, system, user, context, effort, thinking, max_tokens, cache_ttl, images)
         t = time.perf_counter()
         try:
             if batch:
