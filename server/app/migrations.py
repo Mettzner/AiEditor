@@ -83,10 +83,19 @@ def _m003_price_metadata(conn: Connection) -> None:
     conn.execute(text("UPDATE providerprice SET regime = 'plan' WHERE note = 'incluso no plano'"))
 
 
+def _m004_segment_usage(conn: Connection) -> None:
+    """Uso por segmento: (asset, início, fim) e canal de origem, para trechos distintos do mesmo vídeo."""
+    if "usedasset" not in _tables(conn):
+        return
+    add_column(conn, "usedasset", "segment_end", "FLOAT")
+    add_column(conn, "usedasset", "channel_ref", "VARCHAR")
+
+
 MIGRATIONS: list[tuple[int, str, Callable[[Connection], None]]] = [
     (1, "baseline 1.0.0", _m001_baseline),
     (2, "cota do YouTube por bucket e status do cache de busca", _m002_quota_buckets_and_cache_status),
     (3, "preços com moeda, data e regime", _m003_price_metadata),
+    (4, "uso de asset por segmento", _m004_segment_usage),
 ]
 
 

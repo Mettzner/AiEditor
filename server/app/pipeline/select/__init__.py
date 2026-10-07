@@ -27,10 +27,13 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from pathlib import Path
+
+from sqlmodel import select
 
 from ...config import get_secret, load_settings
 from ...db import session_scope
-from ...models import UsedAsset
+from ...models import AuthorizedMedia, UsedAsset, now
 from ...providers.darkvi import images as darkvi_images
 from ...providers.darkvi.client import DarkviError
 from ...providers.http import ProviderError, download
@@ -38,10 +41,12 @@ from ...providers.llm import gemini
 from ...providers.llm import vision as vision_ai
 from ...providers.llm.base import call_llm, estimate_cost
 from ...providers.stock import enabled_providers
+from ...providers.stock.base import Candidate
 from ...providers.stock.archives import ARCHIVES
 from ...providers.youtube import client as youtube
 from ...worker.context import JobContext, StepError
 from ..allocate import youtube_first
+from .. import media_index
 from ..charts import draw_charts
 from ..context import HISTORICAL, STRATEGY_LABEL, is_historical, scene_anachronisms, strategy_order, video_look
 from ...budget import BudgetExceeded, VisionBudget, paid_llm
@@ -52,12 +57,23 @@ from ..validation import policy as validation_policy
 from ..visual import (REWRITE_SYSTEM, QueryRewriteBatch, compact_json, image_type_for, sanitize_queries, scene_style,
                       style_of_realism, video_type_for)
 from .funnel import Choice, SceneContext, choose, observed_descriptions
+from .funnel import _rate as rate_rows
 from .prerank import rank, technical_filter
 from .plan_search import build_search_plan, documentary_query, identity_terms
 from .search import cached_fetch, cached_search, search_all
+from .segments import SegmentLedger, planned_interval
 
 log = logging.getLogger("aieditor.select")
 
+# como cada asset foi obtido (manifesto e créditos). yt-dlp não é fluxo autorizado pelo YouTube, mesmo com CC.
+OBTAINED_HOW = {
+    "pexels": "API oficial do Pexels (arquivo oferecido pela API)",
+    "pixabay": "API oficial do Pixabay (arquivo oferecido pela API)",
+    "wikimedia": "API do Wikimedia Commons", "loc": "API da Library of Congress",
+    "internet_archive": "API do Internet Archive",
+    "youtube": "yt-dlp (download fora dos recursos do YouTube; modo escolhido na Configuração, não é fluxo "
+               "autorizado pela plataforma)",
+}
 SOURCE_LABEL = {"youtube": "YouTube", "stock": "bancos de vídeo", "stock_photo": "fotos de banco",
                 "ai_image": "imagem gerada", "archive": "acervos históricos", "timeless": "planos atemporais"}
 # etapa da cadeia → estratégia de época registrada no relatório visual (§10.7)
@@ -69,6 +85,13 @@ CONTINUITY_BONUS = 0.5
 
 class NoCandidate(Exception):
     pass
+
+
+def channel_ref(c) -> str:
+    """Canal de origem para o limite de repetição: só vale para o YouTube (autor de banco não conta)."""
+    if c.provider not in ("youtube", "authorized_youtube"):
+        return ""
+    return (getattr(c, "channel_id", "") or c.author or "").lower()
 
 
 @dataclass
@@ -144,6 +167,19 @@ class Selector:
         # plano de busca por bloco (montado em run) e catálogo de candidatos compartilhado por grupo
         self.search_plan: dict = {"groups": {}, "scene_group": {}}
         self.catalog: dict[str, dict[str, object]] = {}
+        # YouTube: "reference" (pesquisa documental; render só com arquivo autorizado) ou "download_cc" (yt-dlp)
+        yt_cfg = ctx.settings.get("youtube") or {}
+        self.youtube_ingest = yt_cfg.get("ingest_mode", "reference")
+        self.references_per_scene = int(yt_cfg.get("references_per_scene", 5))
+        self.references: dict[str, list[dict]] = {}
+        # uso por segmento: (asset, início, fim), repetição limitada por vídeo e por canal
+        self.segments = SegmentLedger.from_cfg(self.cfg)
+        for v in self.selection.values():
+            if v.get("external_id") and v.get("provider"):
+                long = SegmentLedger.is_long(v.get("clip_duration"), (v.get("out_point") or 0) - (v.get("in_point") or 0))
+                self.segments.claim(f"{v['provider']}:{v['external_id']}", float(v.get("in_point") or 0),
+                                    float(v.get("out_point") or v.get("in_point") or 0), long,
+                                    (v.get("channel") or "").lower() if v.get("source") == "youtube" else "")
         self.totals: dict = {"searches": 0, "vision_calls": 0, "vision_failed": 0, "vision_cost": 0.0, "cache_hit": 0,
                              "cache_miss": 0, "cache_empty": 0, "cache_error": 0, "quota_blocked": 0}
 
@@ -271,7 +307,11 @@ class Selector:
                     out += page
                     pages += 1
                 stats["youtube_pages"] = stats.get("youtube_pages", 0) + pages
-            return list({c.key: c for c in out}.values())
+            found = list({c.key: c for c in out}.values())
+            if self.youtube_ingest != "download_cc":
+                self._record_references(scene, found, queries)
+                return self._authorized_candidates(found)
+            return found
         if source == "archive":
             feas = (scene.get("context") or {}).get("footage_feasibility")
             out, errors = [], []
@@ -296,6 +336,61 @@ class Selector:
         if errors and not cands:
             log.warning("cena %s (%s): %s", scene["id"], source, errors[:3])
         return cands
+
+    def _record_references(self, scene: dict, found: list, queries: list[str]) -> None:
+        """Pesquisa documental: os vídeos do YouTube mais relevantes viram referências da cena (link, canal, data,
+        consulta), com a pendência explícita de arquivo autorizado. Nenhum download."""
+        if not found:
+            return
+        from .prerank import text_score
+
+        with session_scope() as s:
+            authorized = {m.youtube_id for m in s.exec(select(AuthorizedMedia).where(
+                AuthorizedMedia.youtube_id.in_([c.external_id for c in found])))}
+        dur = scene["end"] - scene["start"]
+        scored = sorted(found, key=lambda c: text_score(c, queries, scene.get("visual_intent", ""), dur,
+                                                         scene.get("subject", ""), scene.get("must_show")),
+                        reverse=True)
+        refs = [{"youtube_id": c.external_id, "url": c.page_url, "title": c.title[:200], "channel": c.author,
+                 "channel_url": c.author_url, "published_at": getattr(c, "published_at", ""), "query": c.query,
+                 "duration": c.duration, "license_declared": c.license,
+                 "status": "authorized_available" if c.external_id in authorized else "reference_only",
+                 "pending": None if c.external_id in authorized else
+                 "sem arquivo autorizado: a referência não entra no render"}
+                for c in scored[: self.references_per_scene]]
+        with self.lock:
+            known = {r["youtube_id"] for r in self.references.get(scene["id"], [])}
+            self.references.setdefault(scene["id"], []).extend(r for r in refs if r["youtube_id"] not in known)
+
+    def _authorized_candidates(self, found: list) -> list:
+        """Vídeos achados no YouTube que têm arquivo autorizado associado: entram como candidatos locais, com
+        frames extraídos do próprio arquivo (timestamps medidos)."""
+        ids = [c.external_id for c in found]
+        if not ids:
+            return []
+        by_id = {c.external_id: c for c in found}
+        with session_scope() as s:
+            media = list(s.exec(select(AuthorizedMedia).where(AuthorizedMedia.youtube_id.in_(ids))))
+        out = []
+        for m in media:
+            ref = by_id[m.youtube_id]
+            try:
+                index = media_index.index_file(Path(m.local_path))
+            except Exception as e:  # noqa: BLE001 — arquivo sumiu ou não abre: a referência fica só como pesquisa
+                log.warning("arquivo autorizado %s indisponível: %s", m.local_path, e)
+                continue
+            segs = index["segments"]
+            step = max(1, len(segs) // 6)
+            picked = segs[::step][:6]
+            out.append(Candidate(
+                provider="authorized_youtube", external_id=str(m.id), title=f"{ref.title} {m.original_name}",
+                duration=index["duration"], width=index["width"], height=index["height"], page_url=ref.page_url,
+                thumbnail=None, query=ref.query, author=m.author or ref.author, author_url=ref.author_url,
+                license=m.license or ref.license, category=ref.category,
+                preview_frames=[p["frame"] for p in picked],
+                frame_positions=[p["frame_t"] / index["duration"] for p in picked],
+                published_at=getattr(ref, "published_at", ""), channel_id=getattr(ref, "channel_id", "")))
+        return out
 
     def _wants_next_page(self, found: list, scene: dict) -> bool:
         """Outra página só se há poucos candidatos úteis (duração, inédito, com a identidade quando exigida) e a
@@ -625,13 +720,26 @@ class Selector:
 
     # ---- fase B: resolver repetições e continuidade (local) ------------------------------------
     def resolve(self, decisions: list[Decision]) -> None:
-        claimed: dict[str, str] = {k: "já usado" for k in self.used}
+        plan = SegmentLedger(self.segments.max_per_video, self.segments.max_per_channel, self.segments.min_gap,
+                             {k: list(v) for k, v in self.segments.claims.items()}, dict(self.segments.channels))
+
+        def interval(d: Decision, o: Option) -> tuple[float, float, bool]:
+            dur = d.scene["end"] - d.scene["start"]
+            a, b = planned_interval(o.candidate.duration, o.pos, dur, o.candidate.is_image)
+            return a, b, SegmentLedger.is_long(o.candidate.duration, dur)
+
+        def take(d: Decision, o: Option) -> bool:
+            a, b, long = interval(d, o)
+            return plan.claim(o.candidate.key, a, b, long, channel_ref(o.candidate))
+
+        def give_back(d: Decision, o: Option) -> None:
+            a, b, _ = interval(d, o)
+            plan.release(o.candidate.key, a, b, channel_ref(o.candidate))
+
         # nota visual antes de nota de texto: as escalas não se comparam
         for d in sorted((d for d in decisions if d.options),
                         key=lambda d: comparable_score(d.options[0].method, d.options[0].score), reverse=True):
-            d.pick = next((i for i, o in enumerate(d.options) if o.candidate.key not in claimed), len(d.options))
-            if d.best:
-                claimed[d.best.candidate.key] = d.scene["id"]
+            d.pick = next((i for i, o in enumerate(d.options) if take(d, o)), len(d.options))
         # continuidade de estilo: vizinhos com o mesmo estilo puxam a cena para esse estilo (+0,5)
         order = sorted(decisions, key=lambda d: d.scene["start"])
 
@@ -650,13 +758,15 @@ class Selector:
             if not prev_s or prev_s != next_s or style_of_realism(d.best.realism) == prev_s:
                 continue
             for j, o in enumerate(d.options):
-                if (style_of_realism(o.realism) == prev_s and o.candidate.key not in claimed
-                        and min(10.0, o.score + CONTINUITY_BONUS) > d.best.score):
-                    claimed.pop(d.best.candidate.key, None)
-                    d.pick = j
-                    claimed[o.candidate.key] = d.scene["id"]
-                    d.stats["continuity"] = prev_s
-                    break
+                if (style_of_realism(o.realism) == prev_s and min(10.0, o.score + CONTINUITY_BONUS) > d.best.score
+                        and o is not d.best):
+                    current = d.best
+                    give_back(d, current)
+                    if take(d, o):
+                        d.pick = j
+                        d.stats["continuity"] = prev_s
+                        break
+                    take(d, current)
 
     # ---- fase C: baixar ------------------------------------------------------------------------
     def finish(self, d: Decision) -> dict:
@@ -691,6 +801,7 @@ class Selector:
                 skip = d.tried_sources | {o.source for o in d.options}
                 if d.kind != "generic" and set(self._chain(d.planned, d.allow_ai, scene)) - skip:
                     retry = self.decide(scene, d.previous, d.allow_ai, skip=skip)
+                    retry.tried_sources |= skip  # sem isto a retomada esquecia o que já foi pulado (laço infinito)
                     retry.stats = {**stats, **{k: v for k, v in retry.stats.items() if k not in stats}}
                     self.resolve([retry])
                     return self.finish(retry)
@@ -766,22 +877,35 @@ class Selector:
 
     def _download(self, scene: dict, o: Option) -> dict:
         c = o.candidate
-        with self.lock:
-            if c.key in self.used:
-                raise NoCandidate(f"{c.key} já foi usado neste vídeo")
-            self.used.add(c.key)
         sid = scene["id"]
         dur = scene["end"] - scene["start"]
-        in_point = 0.0
-        if not c.is_image and c.duration > dur:
-            # centraliza a duração da cena no melhor frame apontado pela IA
-            in_point = round(min(max(0.0, c.duration * o.pos - dur / 2), c.duration - dur - 0.05), 2)
-        out_point = round(in_point + dur, 2) if not c.is_image else None
+        # centraliza a duração da cena no melhor frame apontado pela IA
+        in_point, planned_out = planned_interval(c.duration, o.pos, dur, c.is_image)
+        out_point = planned_out if not c.is_image else None
+        long = SegmentLedger.is_long(c.duration, dur)
+        channel = channel_ref(c)
+        if not self.segments.claim(c.key, in_point, planned_out, long, channel):
+            raise NoCandidate(f"{c.key}: trecho já usado (ou limite por vídeo/canal) neste vídeo")
+        if self.segments.full(c.key, long):
+            with self.lock:
+                self.used.add(c.key)
+        obtained = OBTAINED_HOW.get(c.provider, f"API do provedor {c.provider}")
         try:
             if c.provider == "youtube":
+                if self.youtube_ingest != "download_cc":
+                    raise NoCandidate("modo referência: vídeo do YouTube sem arquivo autorizado não é baixado")
                 dest = self.ctx.path("assets", f"{sid}.mp4")
                 youtube.download_segment(c.external_id, in_point, in_point + dur + 0.5, dest)
                 asset_in, resolution = 0.0, [c.width, c.height]
+            elif c.provider == "authorized_youtube":
+                with session_scope() as s:
+                    media = s.get(AuthorizedMedia, int(c.external_id))
+                if media is None:
+                    raise NoCandidate(f"arquivo autorizado {c.external_id} não existe mais")
+                dest = self.ctx.path("assets", f"{sid}.mp4")
+                meta = media_index.cut_segment(Path(media.local_path), in_point, in_point + dur + 0.5, dest)
+                asset_in, resolution = 0.0, [meta["width"], meta["height"]]
+                obtained = f"arquivo autorizado enviado pelo usuário: {media.rights_note}"
             elif c.is_image:
                 rend = c.best_rendition()
                 assert rend
@@ -796,21 +920,78 @@ class Selector:
                 download(rend.url, dest)
                 asset_in, resolution = in_point, [rend.width, rend.height]
         except Exception:
+            self.segments.release(c.key, in_point, planned_out, channel)
             with self.lock:
                 self.used.discard(c.key)
             raise
-        with session_scope() as s:
-            s.add(UsedAsset(channel_id=self.ctx.channel_id, production_id=self.ctx.production_id,
-                            source=c.provider, external_id=c.external_id, segment_start=in_point))
-            s.commit()
-        return {
+        entry = {
             "source": c.source, "source_used": c.source, "is_image": c.is_image,
             "provider": c.provider, "external_id": c.external_id, "page_url": c.page_url, "title": c.title,
             "author": c.author, "author_url": c.author_url, "license": c.license, "channel": c.author,
             "query": c.query, "score": o.score, "asset": f"assets/{dest.name}",
             "in": asset_in, "in_point": in_point, "out_point": out_point,
             "clip_duration": c.duration or None, "resolution": resolution,
+            "obtained_how": obtained, "retrieved_at": now().date().isoformat(),
+            "published_at": getattr(c, "published_at", "") or None,
         }
+        try:
+            self._confirm_segment(scene, entry, o)
+        except NoCandidate:
+            (self.ctx.dir / entry["asset"]).unlink(missing_ok=True)
+            self.segments.release(c.key, in_point, planned_out, channel)
+            with self.lock:
+                self.used.discard(c.key)
+            raise
+        with session_scope() as s:
+            s.add(UsedAsset(channel_id=self.ctx.channel_id, production_id=self.ctx.production_id,
+                            source=c.provider, external_id=c.external_id, segment_start=in_point,
+                            segment_end=out_point, channel_ref=channel or None))
+            s.commit()
+        return entry
+
+    def _confirm_segment(self, scene: dict, entry: dict, o: Option) -> None:
+        """Fase D3: confere o trecho EFETIVAMENTE usado. ffprobe sempre (duração/resolução reais; falha → próxima
+        opção); visão nos frames do intervalo só em cena de evidência exata/importância alta, com teto de gasto.
+        Reprovado → NoCandidate (a próxima opção é tentada); sem como conferir → "unverified"."""
+        if entry.get("is_image"):
+            return
+        path = self.ctx.dir / entry["asset"]
+        dur = scene["end"] - scene["start"]
+        try:
+            meta = media_index.probe_video(path)
+        except Exception as e:  # noqa: BLE001
+            raise NoCandidate(f"arquivo baixado não abre no ffprobe: {e}") from e
+        start = float(entry.get("in") or 0.0)
+        if not meta["has_video"] or meta["duration"] + 0.1 < start + dur:
+            raise NoCandidate(f"trecho real de {meta['duration']:.2f}s não cobre {start:.2f}+{dur:.2f}s")
+        entry["resolution"] = [meta["width"], meta["height"]] if meta["width"] else entry.get("resolution")
+        check = {"status": "probed", "duration": round(meta["duration"], 3), "width": meta["width"],
+                 "height": meta["height"], "interval": [round(start, 3), round(start + dur, 3)]}
+        entry["segment_check"] = check
+        important = needs_exact(scene) or ((self._group(scene) or {}).get("importance") == "high")
+        if not (self.cfg.get("verify_final_segment", True) and important and vision_ai.available()):
+            return
+        times = media_index.segment_times(start, start + dur, 3)
+        try:
+            frames = media_index.frames_at(path, times, f"{scene['id']}_check")
+        except Exception as e:  # noqa: BLE001
+            check.update(status="unverified", reason=f"frames do trecho não extraídos: {str(e)[:120]}")
+            return
+        stats = {"_budget": self.budget, "_record": self.record_vision}
+        try:
+            note = rate_rows("segment", [[f for _, f in frames]], [o.candidate],
+                             self._scene_ctx(scene, "", list(scene.get("must_avoid") or [])),
+                             self.cfg["gemini_model"], stats)[0]
+        except Exception as e:  # noqa: BLE001 — sem visão agora: o trecho fica sem confirmação (não aprovado)
+            check.update(status="unverified", reason=f"visão indisponível: {str(e)[:120]}")
+            return
+        ok = note["score"] >= float(self.cfg["min_score"]) and bool(note.get("subject_visible"))
+        check.update(status="confirmed" if ok else "rejected", score=note["score"], seen=note.get("seen"),
+                     frame_times=times, vision_calls=stats.get("vision_calls", 0))
+        if not ok:
+            self.ctx.issue("SEGMENT_REJECTED", "A miniatura parecia certa, mas o trecho usado não mostra o assunto; "
+                           "tentando a próxima opção", scene=scene["id"], detail=f"visto: {note.get('seen')}")
+            raise NoCandidate("trecho usado reprovado na conferência visual")
 
 
 def run(ctx: JobContext) -> str:
@@ -951,7 +1132,8 @@ def run(ctx: JobContext) -> str:
                   search_cache={k: t.get(k, 0) for k in ("cache_hit", "cache_miss", "cache_empty", "cache_error",
                                                          "quota_blocked", "youtube_minute_blocked")})
     ctx.write_json("timing_report.json", report)
-    ctx.write_json("search_plan.json", {"grouping": sel.cfg.get("search_grouping", "context_entity_action"),
+    ctx.write_json("references.json", {"ingest_mode": sel.youtube_ingest, "scenes": sel.references})
+    ctx.write_json("search_plan.json", {"segments": sel.segments.stats(),"grouping": sel.cfg.get("search_grouping", "context_entity_action"),
                                         "youtube_results_per_query": sel.cfg.get("youtube_results_per_query"),
                                         "groups": list(sel.search_plan["groups"].values())})
     log.info("seleção (%s): %.1fs no total, %.1fs para avaliar %d cena(s) reais, %d chamada(s) de visão, "

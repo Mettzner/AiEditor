@@ -11,7 +11,15 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Field, SimpleSelect } from "@/components/fields";
 import { ModelDownloadPanel } from "@/components/model-download";
-import { api, type AppInfo, type Price, type SettingsPayload, type Track, type YoutubeQuota } from "@/lib/api";
+import {
+  api,
+  type AppInfo,
+  type AuthorizedMedia,
+  type Price,
+  type SettingsPayload,
+  type Track,
+  type YoutubeQuota,
+} from "@/lib/api";
 
 const KEYS: { id: string; label: string; test?: string; note?: string }[] = [
   { id: "darkvi", label: "Darkvi (TTS + imagens)", test: "darkvi" },
@@ -59,6 +67,10 @@ export default function ConfiguracaoPage() {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [ytQuota, setYtQuota] = useState<YoutubeQuota | null>(null);
   const [info, setInfo] = useState<AppInfo | null>(null);
+  const [media, setMedia] = useState<AuthorizedMedia[]>([]);
+  const [mediaForm, setMediaForm] = useState({ youtube_url: "", rights_note: "", author: "", license: "" });
+  const [mediaFile, setMediaFile] = useState<File | null>(null);
+  const [mediaBusy, setMediaBusy] = useState(false);
 
   async function load() {
     try {
@@ -69,6 +81,7 @@ export default function ConfiguracaoPage() {
       setTracks(await api.tracks());
       setYtQuota(await api.youtubeQuota());
       setInfo(await api.appInfo());
+      setMedia(await api.authorizedMedia());
     } catch (e) {
       toast.error(`Backend indisponível: ${(e as Error).message}`);
     }
@@ -270,6 +283,21 @@ export default function ConfiguracaoPage() {
             <span className="w-32">YouTube</span>
             <span className="text-xs text-muted-foreground">sempre só Creative Commons, em HD</span>
           </div>
+          <Field label="Uso dos vídeos do YouTube">
+            <SimpleSelect
+              value={s.youtube.ingest_mode ?? "reference"}
+              onChange={(v) => patch(["youtube", "ingest_mode"], v)}
+              options={[
+                { value: "reference", label: "Referência: pesquisa documental; render só com arquivo autorizado" },
+                { value: "download_cc", label: "Baixar trechos CC com yt-dlp (responsabilidade sua)" },
+              ]}
+            />
+          </Field>
+          <p className={`text-xs ${s.youtube.ingest_mode === "download_cc" ? "text-amber-300" : "text-muted-foreground"}`}>
+            {s.youtube.ingest_mode === "download_cc"
+              ? "O download por yt-dlp não é um recurso oferecido pelo YouTube, mesmo para vídeos Creative Commons: a licença do vídeo não substitui a autorização da plataforma. Cada trecho fica marcado assim no manifesto da produção."
+              : "Os vídeos achados viram referências por cena (link, canal, data) no relatório. Para usar um deles no vídeo, associe abaixo um arquivo que você tem direito de usar."}
+          </p>
           {ytQuota && (
             <div className="rounded-md border p-3 text-sm">
               <p>
@@ -300,7 +328,87 @@ export default function ConfiguracaoPage() {
       </Card>
 
       <Card>
+        <Card>
         <CardHeader>
+          <CardTitle>Mídia autorizada</CardTitle>
+          <CardDescription>
+            Arquivos de vídeo que você tem direito de usar (do seu canal, com permissão do autor...). Associados a um
+            link do YouTube, entram no render quando aquele vídeo aparecer na pesquisa.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <div className="grid gap-2 sm:grid-cols-2">
+            <Input type="file" accept="video/*" onChange={(e) => setMediaFile(e.target.files?.[0] ?? null)} />
+            <Input
+              placeholder="Link do YouTube (opcional)"
+              value={mediaForm.youtube_url}
+              onChange={(e) => setMediaForm({ ...mediaForm, youtube_url: e.target.value })}
+            />
+            <Input
+              placeholder="Autorização (obrigatório): ex. vídeo do meu canal"
+              value={mediaForm.rights_note}
+              onChange={(e) => setMediaForm({ ...mediaForm, rights_note: e.target.value })}
+            />
+            <Input
+              placeholder="Autor e licença (opcional)"
+              value={mediaForm.author}
+              onChange={(e) => setMediaForm({ ...mediaForm, author: e.target.value })}
+            />
+          </div>
+          <Button
+            size="sm"
+            disabled={!mediaFile || !mediaForm.rights_note.trim() || mediaBusy}
+            onClick={async () => {
+              if (!mediaFile) return;
+              setMediaBusy(true);
+              try {
+                const form = new FormData();
+                form.append("file", mediaFile);
+                Object.entries(mediaForm).forEach(([k, v]) => form.append(k, v));
+                await api.addAuthorizedMedia(form);
+                setMedia(await api.authorizedMedia());
+                setMediaFile(null);
+                setMediaForm({ youtube_url: "", rights_note: "", author: "", license: "" });
+                toast.success("Arquivo autorizado adicionado");
+              } catch (e) {
+                toast.error((e as Error).message);
+              } finally {
+                setMediaBusy(false);
+              }
+            }}
+          >
+            {mediaBusy ? "Enviando…" : "Adicionar"}
+          </Button>
+          {media.length > 0 && (
+            <ul className="divide-y rounded-md border">
+              {media.map((m) => (
+                <li key={m.id} className="flex items-center gap-3 p-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate">{m.original_name || m.sha256.slice(0, 12)}</p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {m.youtube_id ? `YouTube ${m.youtube_id} · ` : ""}
+                      {Math.round(m.duration)}s · {m.width}×{m.height} · {m.rights_note}
+                      {!m.available && " · arquivo não encontrado"}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={async () => {
+                      await api.deleteAuthorizedMedia(m.id);
+                      setMedia(await api.authorizedMedia());
+                    }}
+                  >
+                    Remover
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
+      <CardHeader>
           <CardTitle>Modelos do Claude por etapa</CardTitle>
           <CardDescription>
             Tarefas simples usam modelos mais baratos. O custo e os tokens de cada produção aparecem no card e em

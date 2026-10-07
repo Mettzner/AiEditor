@@ -24,3 +24,26 @@ if os.environ.get("AIEDITOR_LIVE") != "1":
 
     # cliente HTTP comum sem rede: provedores não simulados falham como offline, nunca gastam cota de verdade
     _http._client = httpx.Client(transport=httpx.MockTransport(_no_network))
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _fake_probe_for_placeholder_files(monkeypatch):
+    """Testes antigos gravam bytes de mentira como "vídeo baixado": esses (minúsculos) recebem metadados
+    simulados; arquivos de verdade continuam passando pelo ffprobe real."""
+    from app.pipeline import media_index
+
+    real = media_index.probe_video
+
+    def probe(path):
+        try:
+            small = path.stat().st_size < 1024
+        except OSError:
+            small = False
+        if small:
+            return {"duration": 3600.0, "width": 1920, "height": 1080, "has_video": True}
+        return real(path)
+
+    monkeypatch.setattr(media_index, "probe_video", probe)

@@ -71,6 +71,29 @@ class UsedAsset(SQLModel, table=True):
     external_id: str = Field(index=True)
     perceptual_hash: Optional[str] = None
     segment_start: Optional[float] = None
+    segment_end: Optional[float] = None
+    channel_ref: Optional[str] = None  # canal/autor de origem (limite de repetição por canal)
+    created_at: datetime = Field(default_factory=now)
+
+
+class AuthorizedMedia(SQLModel, table=True):
+    """Arquivo de vídeo que o usuário tem autorização para usar, opcionalmente associado a uma referência do
+    YouTube (o vídeo achado na pesquisa). Só com ele um trecho desse vídeo entra no render no modo referência."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    youtube_id: Optional[str] = Field(default=None, index=True)
+    source_url: Optional[str] = None
+    local_path: str
+    sha256: str = Field(index=True)
+    original_name: str = ""
+    author: str = ""
+    license: str = ""
+    rights_note: str  # como a autorização foi obtida (conteúdo próprio, permissão do autor, contrato...)
+    obtained_how: str = "arquivo enviado pelo usuário"
+    duration: float = 0.0
+    width: int = 0
+    height: int = 0
+    verified_at: datetime = Field(default_factory=now)
     created_at: datetime = Field(default_factory=now)
 
 

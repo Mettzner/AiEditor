@@ -23,6 +23,8 @@ _frames_dir = CACHE_DIR / "frames"
 
 
 def _cached(url: str) -> Path | None:
+    if not url.startswith(("http://", "https://")) and Path(url).exists():  # frame local (arquivo autorizado)
+        return Path(url)
     _frames_dir.mkdir(parents=True, exist_ok=True)
     path = _frames_dir / (hashlib.sha1(url.encode()).hexdigest() + ".jpg")
     if path.exists() and path.stat().st_size > 0:
@@ -35,7 +37,9 @@ def _cached(url: str) -> Path | None:
 
 def frame_bytes(frame: Path | str | None) -> bytes:
     """Bytes de um frame (caminho local ou URL já baixada para o cache); nunca baixa. Vazio se indisponível."""
-    if isinstance(frame, str):
+    if isinstance(frame, str) and not frame.startswith(("http://", "https://")) and Path(frame).exists():
+        path = Path(frame)
+    elif isinstance(frame, str):
         path = _frames_dir / (hashlib.sha1(frame.encode()).hexdigest() + ".jpg")
     else:
         path = frame

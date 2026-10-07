@@ -340,6 +340,36 @@ export interface YoutubeQuota {
   searches_left: number;
 }
 
+export interface AuthorizedMedia {
+  id: number;
+  youtube_id: string | null;
+  source_url: string | null;
+  original_name: string;
+  author: string;
+  license: string;
+  rights_note: string;
+  obtained_how: string;
+  duration: number;
+  width: number;
+  height: number;
+  sha256: string;
+  verified_at: string;
+  available: boolean;
+}
+
+export interface YoutubeReference {
+  youtube_id: string;
+  url: string;
+  title: string;
+  channel: string;
+  published_at: string;
+  query: string;
+  duration: number;
+  license_declared: string;
+  status: "reference_only" | "authorized_available";
+  pending: string | null;
+}
+
 export interface Price {
   id: number;
   provider: string;
@@ -435,6 +465,14 @@ export const api = {
   setupModelStatus: () => request<ModelDownload>("/setup/model"),
   setupDone: () => request<{ ok: boolean }>("/setup/done", json("POST", {})),
   youtubeQuota: () => request<YoutubeQuota>("/youtube/quota"),
+  authorizedMedia: () => request<AuthorizedMedia[]>("/authorized-media"),
+  addAuthorizedMedia: (form: FormData) =>
+    request<AuthorizedMedia>("/authorized-media", { method: "POST", body: form }),
+  deleteAuthorizedMedia: (id: number) => request<{ ok: boolean }>(`/authorized-media/${id}`, { method: "DELETE" }),
+  references: (productionId: number) =>
+    request<{ ingest_mode?: string; scenes: Record<string, YoutubeReference[]> }>(
+      `/productions/${productionId}/references`,
+    ),
   health: () => request<{ ok: boolean; ffmpeg: boolean }>("/health"),
 };
 

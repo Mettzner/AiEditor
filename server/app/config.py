@@ -56,7 +56,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "youtube": {"enabled": True, "first": True, "creative_commons_only": True, "daily_quota": 10_000,
                 "quota_reserve": 500, "max_duration": 1800, "quota_accounting_mode": "separate_buckets",
                 "buckets": {"search": {"daily_limit": 100, "reserve": 5},
-                            "default": {"daily_limit": 10_000, "reserve": 200}}},
+                            "default": {"daily_limit": 10_000, "reserve": 200}},
+                # reference: o YouTube é pesquisa documental (links e trechos) e só entra no render com arquivo
+                # autorizado associado; download_cc: baixa o trecho com yt-dlp (não é fluxo autorizado pela
+                # plataforma, mesmo com licença CC; fica registrado no manifesto e é escolha explícita do usuário)
+                "ingest_mode": "reference",
+                "references_per_scene": 5},
     "ai_image_providers": [
         {"id": "darkvi", "enabled": True, "priority": 1},
     ],
@@ -121,6 +126,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "compare_sources_for_exact": True,
         "vision_sample_per_channel": 2,  # diversidade na amostra enviada à visão
         "verify_final_segment": True,
+        # uso por segmento (Fase D4): trechos distintos do mesmo vídeo longo, com limites de repetição
+        "max_segments_per_video": 2,
+        "max_clips_per_channel": 4,
+        "segment_min_gap_seconds": 30,
         "gemini_model": "gemini-3.8-flash",
         "parallel_scenes": 4,
         "parallel_downloads": 4,
@@ -166,7 +175,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "words_per_minute": {"en": 150, "pt": 145, "es": 150},
     "worker": {"max_parallel_productions": 2},
     # upload da narração: limite de tamanho e de duração (conferida com o ffprobe antes de a produção existir)
-    "upload": {"max_mb": 500, "max_minutes": 240},
+    "upload": {"max_mb": 500, "max_minutes": 240, "max_video_mb": 4096},
 }
 
 _lock = threading.Lock()

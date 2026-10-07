@@ -17,6 +17,7 @@ CATALOG: dict[str, tuple[str, str]] = {
     "SCENE_REVIEW_REQUIRED": ("warning", "Cena precisa de revisão (identidade exata ou evidência sem confirmação)"),
     "INTERPRETATION_REVIEW": ("warning", "Interpretação do roteiro a revisar (ambiguidade, referência ou divisão)"),
     "SCRIPT_CONTRADICTION": ("warning", "O roteiro afirma e nega a mesma coisa"),
+    "SEGMENT_REJECTED": ("warning", "Trecho usado não mostrou o assunto na conferência; usada a próxima opção"),
     "SCENE_GENERIC_FALLBACK": ("warning", "Usada uma foto genérica do assunto por falta de opção"),
     "LANGUAGE_MISMATCH": ("warning", "Idioma escolhido para o vídeo diverge do idioma detectado no roteiro"),
     "OVERLAY_LANGUAGE_FIXED": ("info", "Texto de overlay estava em outro idioma e foi corrigido"),

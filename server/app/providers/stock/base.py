@@ -47,7 +47,7 @@ class Candidate:
 
     @property
     def source(self) -> str:
-        if self.provider == "youtube":
+        if self.provider in ("youtube", "authorized_youtube"):
             return "youtube"
         return "stock_photo" if self.is_image else "stock"
 

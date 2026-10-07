@@ -124,7 +124,13 @@ def env(monkeypatch):
         200, json={"items": []}, request=httpx.Request(method, url)))
     llm = FakeLLM()
     monkeypatch.setattr(sel_mod, "call_llm", llm)
-    return {"stock": stock, "vision": vision, "monkeypatch": monkeypatch, "llm": llm}
+    # estes testes cobrem o download de trechos do YouTube (modo explícito download_cc); o modo padrão,
+    # referência, tem testes próprios em test_provenance.py
+    from app.config import update_settings
+
+    update_settings({"youtube": {"ingest_mode": "download_cc"}})
+    yield {"stock": stock, "vision": vision, "monkeypatch": monkeypatch, "llm": llm}
+    update_settings({"youtube": {"ingest_mode": "reference"}})
 
 
 def make_ctx(real_pct: int = 100, mode: str = "fast") -> JobContext:
