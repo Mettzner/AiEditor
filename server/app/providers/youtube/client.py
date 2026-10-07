@@ -65,13 +65,21 @@ def search(query: str, per_page: int = 15, lang: str = "en") -> list[Candidate]:
     ids = [it["id"]["videoId"] for it in body.get("items", []) if it.get("id", {}).get("videoId")]
     if not ids:
         return []
-    details = _get("videos", {"part": "snippet,contentDetails,status", "id": ",".join(ids)}, quota.VIDEOS_COST)
+    # part=player com maxWidth devolve embedWidth/embedHeight na proporção do vídeo (mesmo custo de 1 unidade):
+    # é o único jeito de saber pela API se o vídeo é vertical (Shorts), antes de avaliar e baixar
+    details = _get("videos", {"part": "snippet,contentDetails,status,player", "id": ",".join(ids),
+                              "maxWidth": 1280}, quota.VIDEOS_COST)
+    sel = load_settings()["selection"]
+    lo, hi = sel.get("min_aspect", 1.55), sel.get("max_aspect", 2.0)
     out = []
     for v in details.get("items", []):
         if v.get("status", {}).get("license") != "creativeCommon":  # confirma a licença
             continue
         sn, cd = v.get("snippet", {}), v.get("contentDetails", {})
         vid = v["id"]
+        aspect = player_aspect(v.get("player") or {})
+        if (aspect is not None and not lo <= aspect <= hi) or "#shorts" in (sn.get("title", "") or "").lower():
+            continue
         out.append(Candidate(
             provider="youtube", external_id=vid,
             title=" ".join([sn.get("title", "")] + sn.get("tags", [])[:15]),
@@ -87,6 +95,15 @@ def search(query: str, per_page: int = 15, lang: str = "en") -> list[Candidate]:
             frame_positions=[0.25, 0.5, 0.75],
         ))
     return out
+
+
+def player_aspect(player: dict) -> float | None:
+    """Proporção do vídeo pelo player embutido (embedWidth/embedHeight); None se a API não informar."""
+    try:
+        w, h = float(player["embedWidth"]), float(player["embedHeight"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return w / h if h > 0 else None
 
 
 def download_segment(video_id: str, start: float, end: float, dest: Path) -> Path:
