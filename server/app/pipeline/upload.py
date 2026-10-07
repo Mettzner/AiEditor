@@ -8,51 +8,17 @@ from ..models import Production, now
 from ..providers.storage import gdrive
 from ..worker.context import JobContext, StepError
 from .render import ffmpeg
+from .provenance import build_manifest, credits_text, write_manifest
 from .report import write_report, write_visual_report
 
 
 def _credits(ctx: JobContext) -> str | None:
-    """creditos.txt: atribuição CC-BY do YouTube (obrigatória), dos bancos (pedida pelo Pexels/Pixabay) e dos
-    efeitos sonoros do Freesound (CC BY exige; CC0 é cortesia)."""
-    from ..providers.stock.archives import ARCHIVE_PROVIDERS
-
-    sel = ctx.read_json("selection.json") if (ctx.dir / "selection.json").exists() else {}
-    yt = [v for v in sel.values() if v.get("source") == "youtube"]
-    archive = [v for v in sel.values() if v.get("provider") in ARCHIVE_PROVIDERS and v.get("asset")]
-    stock = [v for v in sel.values() if v.get("source") == "stock" and v.get("provider") not in ARCHIVE_PROVIDERS]
+    """creditos.txt a partir do manifesto de procedência: atribuições (YouTube, acervos, bancos, Freesound),
+    gráficos com a fonte dos dados, aviso de imagens geradas por IA e afirmações sem fonte verificada."""
     timeline = ctx.read_json("timeline.json") if (ctx.dir / "timeline.json").exists() else {}
-    sounds = {e["file"]: e for e in (timeline.get("audio") or {}).get("sfx") or [] if e.get("source") == "freesound"}
-    if not yt and not stock and not archive and not sounds:
-        return None
-    lines: list[str] = []
-    if sounds:
-        lines += ["Efeitos sonoros (Freesound):", ""]
-        lines += [f"- {e.get('author') or 'autor desconhecido'} — {e.get('license', '')} — {e.get('page_url', '')}"
-                  for e in sounds.values()]
-        lines.append("")
-    if archive:  # acervos históricos: autor, licença e página de cada item (CC BY exige atribuição)
-        names = {"wikimedia": "Wikimedia Commons", "loc": "Library of Congress", "internet_archive": "Internet Archive"}
-        lines += ["Acervos históricos:", ""]
-        lines += [f"- {v.get('title', '')[:120]} — {v.get('author') or 'autor desconhecido'} — {v.get('license', '')} "
-                  f"— {names.get(v.get('provider', ''), v.get('provider', ''))} — {v.get('page_url', '')}" for v in archive]
-        lines.append("")
-    if yt:
-        lines += ["Créditos (Creative Commons BY):", ""]
-        lines += [f"- {v.get('title', '')} — {v.get('channel', '')} — {v.get('page_url', '')}" for v in yt]
-        lines.append("")
-    if stock:
-        names = {"pexels": "Pexels", "pixabay": "Pixabay"}
-        by_provider: dict[str, set[str]] = {}
-        for v in stock:
-            by_provider.setdefault(names.get(v.get("provider", ""), v.get("provider", "")), set()).add(
-                v.get("author") or "autor desconhecido")
-        lines.append("Vídeos de banco:")
-        lines += [f"- {prov}: {', '.join(sorted(authors))}" for prov, authors in sorted(by_provider.items())]
-        lines.append("")
-        lines.append("Detalhe por clipe:")
-        lines += [f"- {v.get('author', '')} ({names.get(v.get('provider', ''), '')}) — {v.get('page_url', '')}"
-                  for v in stock]
-    return "\n".join(lines) + "\n"
+    sounds = [e for e in (timeline.get("audio") or {}).get("sfx") or [] if e.get("source") == "freesound"]
+    unique = list({e["file"]: e for e in sounds}.values())
+    return credits_text(build_manifest(ctx.dir), unique)
 
 
 def run(ctx: JobContext) -> str:
@@ -70,6 +36,7 @@ def run(ctx: JobContext) -> str:
     credits = _credits(ctx)
     if credits:
         ctx.path("output", "creditos.txt").write_text(credits, encoding="utf-8")
+    manifest = write_manifest(ctx)
     report = write_report(ctx)  # atualizado com todos os problemas até o render
     visual = write_visual_report(ctx)
 
@@ -88,6 +55,8 @@ def run(ctx: JobContext) -> str:
             gdrive.upload(ctx.dir / "output" / "creditos.txt", folder_id, "text/plain")
         if report:
             gdrive.upload(report, folder_id, "application/json")
+        if manifest:
+            gdrive.upload(manifest, folder_id, "application/json")
         gdrive.upload(visual, folder_id, "application/json")
     except Exception as e:  # noqa: BLE001
         raise StepError("DRIVE_UPLOAD_FAILED", f"Upload falhou; arquivo mantido em {video}", repr(e)) from e
