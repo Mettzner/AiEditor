@@ -7,9 +7,20 @@ from ..models import ProductionConfig
 YOUTUBE_IMPLEMENTED = True
 
 
+def youtube_first() -> bool:
+    yt = load_settings()["youtube"]
+    return bool(yt.get("enabled", True) and yt.get("first", True))
+
+
 def targets(total: float, config: ProductionConfig) -> dict[str, float]:
     real = total * config.real_pct / 100
-    yt = real * config.youtube_pct / 100 if load_settings()["youtube"]["enabled"] else 0.0
+    yt_cfg = load_settings()["youtube"]
+    if not yt_cfg.get("enabled", True):
+        yt = 0.0
+    elif yt_cfg.get("first", True):  # todo o tempo real tenta o YouTube; o que não couber na cota vai aos bancos
+        yt = real
+    else:
+        yt = real * config.youtube_pct / 100
     return {"ai": total - real, "youtube": yt, "stock": real - yt}
 
 
