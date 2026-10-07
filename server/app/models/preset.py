@@ -62,6 +62,8 @@ class Preset(BaseModel):
     # Acabamento da edição: efeitos sonoros (whoosh, impacto, riser, teclas) e textura de filme (grão e vinheta)
     sfx: bool = True
     film_look: bool = True
+    # Idioma do vídeo salvo como padrão do canal na Criação: vem pré-selecionado nos próximos vídeos
+    default_video_language: str | None = None
 
 
 # Campos escolhidos na Criação; "salvar como padrão do canal" grava só estes no preset.
