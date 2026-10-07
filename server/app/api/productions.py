@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 from ..config import job_dir, load_settings
 from ..db import get_session, session_scope
 from ..estimate import estimate
-from ..lang import detect as detect_language
+from ..lang import LANGUAGES, detect as detect_language, options as language_options
 from ..pipeline.report import build_report
 from ..purge import PurgeError, purge_production, remove_job_files
 from ..models import CREATION_FIELDS, Channel, Issue, Preset, Production, ProductionConfig, ProductionStep, now
@@ -131,9 +131,9 @@ def get_production(production_id: int, s: Session = Depends(get_session)):
     return card
 
 
-# Decididos pelo sistema, nunca pela tela: idioma (detectado no roteiro), buscas (inglês), estilo visual e
-# representação de época (interpretados do roteiro pela Bíblia de Contexto).
-AUTOMATIC_FIELDS = {"language", "search_language", "visual_style", "period_look"}
+# Decididos pelo sistema, nunca pela tela: buscas (inglês), estilo visual e representação de época (interpretados
+# do roteiro pela Bíblia de Contexto). O idioma do vídeo vem da tela (pré-preenchido com o detectado no roteiro).
+AUTOMATIC_FIELDS = {"language", "search_language", "visual_style", "period_look", "video_language"}
 
 
 def _build_config(s: Session, channel_id: int, title: str, overrides: dict, audio_mode: str,
@@ -146,7 +146,8 @@ def _build_config(s: Session, channel_id: int, title: str, overrides: dict, audi
     base.update({k: v for k, v in overrides.items() if k in Preset.model_fields and k not in AUTOMATIC_FIELDS})
     if music is not None:
         base["music"]["enabled"] = bool(music)
-    lang = detect_language(script) or "en"
+    chosen = overrides.get("video_language")
+    lang = chosen if chosen in LANGUAGES else (detect_language(script) or "en")
     base.update(language=lang, search_language="en", visual_style="", period_look="cinematic")
     return ProductionConfig(**base, title=title, channel_name=ch.name, audio_mode=audio_mode,  # type: ignore[arg-type]
                             video_language=lang)
@@ -183,7 +184,8 @@ async def create_production(
         assert ch
         chosen = cfg.model_dump()
         ch.preset = {**ch.preset, **{k: chosen[k] for k in CREATION_FIELDS},
-                     "music": {**ch.preset.get("music", {}), "enabled": cfg.music.enabled}}
+                     "music": {**ch.preset.get("music", {}), "enabled": cfg.music.enabled},
+                     "default_video_language": cfg.lang}
         s.add(ch)
     p = Production(channel_id=channel_id, title=title, script=script, config=cfg.model_dump(), status="queued",
                    step_label="Na fila", cost_estimated=estimate(cfg, script)["cost"]["total"])
@@ -192,6 +194,13 @@ async def create_production(
     s.refresh(p)
     # o SQLite reaproveita o id da última produção excluída: a pasta do job precisa começar vazia
     remove_job_files(p.id)  # type: ignore[arg-type]
+    detected = detect_language(script)
+    if detected and detected != cfg.lang:  # escolha consciente, mas o roteiro não é traduzido
+        s.add(Issue(production_id=p.id, code="LANGUAGE_MISMATCH", severity="warning",  # type: ignore[arg-type]
+                    message=f"O roteiro parece estar em {LANGUAGES.get(detected, (detected,) * 2)[1]}, mas o vídeo "
+                            f"foi criado em {LANGUAGES[cfg.lang][1]}. O texto não é traduzido: a narração lê o roteiro "
+                            "como está, as legendas seguem a fala e títulos e cards seguem o idioma escolhido."))
+        s.commit()
     if audio_mode == "upload":
         dest = job_dir(p.id) / "input" / f"narration.{ext}"  # type: ignore[arg-type]
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -276,6 +285,21 @@ class EstimateIn(BaseModel):
     config: dict = {}
     audio_seconds: float | None = None
     audio_mode: str = "tts"
+
+
+class DetectIn(BaseModel):
+    script: str = ""
+
+
+@router.get("/languages")
+def languages():
+    return language_options()
+
+
+@router.post("/detect-language")
+def detect_language_route(body: DetectIn):
+    """Idioma do roteiro, para pré-preencher o idioma do vídeo na Criação (None com texto de menos)."""
+    return {"language": detect_language(body.script)}
 
 
 @router.post("/estimate")
