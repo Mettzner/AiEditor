@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ...db import session_scope
 from ...models import VisionCache
-from ...providers.llm import gemini
+from ...providers.llm import gemini, vision
 from ...providers.stock.base import Candidate
 from ..visual import VISION_PROMPT, VisionSheet, compact_json, score_row, vision_context
 from .sheet import build_sheet, pick_frames
@@ -100,11 +100,16 @@ def _rate(stage: str, rows: list[list], cands: list[Candidate], ctx: SceneContex
             with timer.track(stats["_scene"], "folha de miniaturas"):
                 image = build_sheet(rows)
             with timer.track(stats["_scene"], "chamada de visão"):
-                sheet, cost = gemini.rate_sheet(image, prompt, model, schema=VisionSheet)
+                sheet, cost, provider = vision.rate_sheet(image, prompt, model, schema=VisionSheet,
+                                                          budget=stats.get("_budget"), record=stats.get("_record"))
         else:
-            sheet, cost = gemini.rate_sheet(build_sheet(rows), prompt, model, schema=VisionSheet)
+            sheet, cost, provider = vision.rate_sheet(build_sheet(rows), prompt, model, schema=VisionSheet,
+                                                      budget=stats.get("_budget"), record=stats.get("_record"))
+        stats.setdefault("vision_providers", {})
+        stats["vision_providers"][provider] = stats["vision_providers"].get(provider, 0) + 1
         stats["vision_calls"] = stats.get("vision_calls", 0) + 1
-        stats["vision_cost"] = stats.get("vision_cost", 0.0) + cost
+        if provider != "claude" or not stats.get("_record"):  # Claude com _record já entrou chamada a chamada
+            stats["vision_cost"] = stats.get("vision_cost", 0.0) + cost
         by_row = {c.row: c for c in sheet.candidates}
         result = []
         for i, row in enumerate(rows, start=1):
@@ -142,7 +147,7 @@ def choose(ranked: list[Candidate], ctx: SceneContext, cfg: dict, stats: dict) -
 
     text_choice = Choice(top, top.score, mid(top), "ranking de texto", "text",
                          alternatives=[(c, c.score, mid(c), None) for c in ranked[1:]])
-    if not gemini.available():
+    if not vision.available():
         return text_choice
     model = cfg["gemini_model"]
     calls_before = stats.get("vision_calls", 0)
@@ -186,6 +191,11 @@ def choose(ranked: list[Candidate], ctx: SceneContext, cfg: dict, stats: dict) -
     except gemini.GeminiQuotaExhausted as e:
         stats["vision_quota"] = str(e)
         text_choice.method = "text_fallback"
+        return text_choice
+    except vision.VisionBudgetExceeded:
+        stats["vision_budget"] = True
+        text_choice.method = "text_fallback"
+        text_choice.vision_calls = stats.get("vision_calls", 0) - calls_before
         return text_choice
     except Exception as e:  # noqa: BLE001 — visão nunca derruba a produção
         log.warning("IA de visão falhou: %s", e)
