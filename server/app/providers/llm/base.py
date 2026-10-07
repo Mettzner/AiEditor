@@ -32,7 +32,7 @@ class LLMProvider(Protocol):
     def structured(self, *, model: str, system: str, user: str, schema: type[T], effort: str | None = None,
                    max_tokens: int = 16000, context: str | list[str] | None = None, task: str = "",
                    thinking: str = "adaptive", use_cache: bool = True, batch: bool = False,
-                   cache_ttl: str = "5m") -> tuple[T, LLMUsage]: ...
+                   cache_ttl: str = "5m", images: list[bytes] | None = None) -> tuple[T, LLMUsage]: ...
 
     def test(self) -> dict: ...
 
@@ -53,13 +53,13 @@ def get_llm(task: str) -> tuple[LLMProvider, dict]:
 
 
 def call_llm(task: str, *, system: str, user: str, schema: type[T], context: str | list[str] | None = None,
-             max_tokens: int = 8000, batch: bool = False) -> tuple[T, LLMUsage]:
+             max_tokens: int = 8000, batch: bool = False, images: list[bytes] | None = None) -> tuple[T, LLMUsage]:
     """Atalho: chama o modelo configurado para a etapa com os parâmetros dela (iguais em toda chamada da etapa,
     para não invalidar o cache do prompt)."""
     llm, cfg = get_llm(task)
     return llm.structured(model=cfg["model"], system=system, user=user, schema=schema, effort=cfg.get("effort"),
                           max_tokens=max_tokens, context=context, task=task, thinking=cfg.get("thinking", "adaptive"),
-                          batch=batch, cache_ttl=cfg.get("cache_ttl", "5m"))
+                          batch=batch, cache_ttl=cfg.get("cache_ttl", "5m"), images=images)
 
 
 def failed_usage(error: BaseException) -> LLMUsage | None:
