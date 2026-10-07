@@ -31,7 +31,12 @@ from .visual import (MEDIA_STYLE_RULES, NUMBER_HINTS, PLAN_SYSTEM, Style, StyleA
 
 SENTENCE_END = re.compile(r"[.!?…]['\")\]”’]*$")
 SOFT_BREAK = re.compile(r"[,;:—–-]['\")\]”’]*$")
-WINDOW_UNITS = 90
+# Unidades por chamada do planejamento. Com 90, a resposta (~35 campos por cena) passava de 16 mil tokens e era
+# cortada: a Anthropic cobrava a tentativa, o retry idêntico cortava de novo e a janela caía no agrupamento
+# automático. Com 45 a resposta fica perto da metade do teto; o prefixo em cache faz a chamada extra custar pouco.
+WINDOW_UNITS = 45
+PLAN_MAX_TOKENS = 16000
+MIN_SPLIT_UNITS = 6  # resposta cortada numa janela menor que 2×isso vai direto para o agrupamento automático
 
 
 # ---------- unidades ----------------------------------------------------------
@@ -276,25 +281,37 @@ def run(ctx: JobContext) -> str:
     windows = [units[i:i + WINDOW_UNITS] for i in range(0, len(units), WINDOW_UNITS)]
     context = plan_context(ctx, units)
 
-    def plan_window(wi: int, bible: dict) -> PlanWindow:
-        win = windows[wi]
-        user = (f"{brief_section(bible)}\nPlan units {win[0]['i']} to {win[-1]['i']} "
-                f"(window {wi + 1} of {len(windows)}).")
+    def plan_units(win: list[dict], label: str, bible: dict) -> PlanWindow:
+        user = f"{brief_section(bible)}\nPlan units {win[0]['i']} to {win[-1]['i']} ({label})."
+        err: Exception | None = None
         for attempt in range(2):
             try:
                 if economy:
                     ctx.progress(0.3, "Aguardando IA (lote econômico, até 24 h)")
                 parsed, usage = call_llm("plan", system=PLAN_SYSTEM, context=context, user=user, schema=PlanWindow,
-                                         max_tokens=16000, batch=economy)
+                                         max_tokens=PLAN_MAX_TOKENS, batch=economy)
                 ctx.record_llm(usage)
                 return _validate(parsed, win[0]["i"], win[-1]["i"], media_style, bible)
             except Exception as e:  # noqa: BLE001
+                err = e
                 if (paid := failed_usage(e)) is not None:
                     ctx.record_llm(paid)
+                if getattr(e, "truncated", False):
+                    # o mesmo pedido seria cortado de novo (e cobrado de novo): metade das unidades por chamada
+                    if len(win) < 2 * MIN_SPLIT_UNITS:
+                        break
+                    half = len(win) // 2
+                    a = plan_units(win[:half], f"{label}, part 1 of 2", bible)
+                    b = plan_units(win[half:], f"{label}, part 2 of 2", bible)
+                    return PlanWindow(scenes=a.scenes + b.scenes, music_mood=a.music_mood or b.music_mood)
                 if attempt == 1:
-                    ctx.issue("STEP_FAILED", f"Planejamento por IA falhou na parte {wi + 1}; usando agrupamento "
-                              "automático", detail=repr(e), severity="warning")
+                    break
+        ctx.issue("STEP_FAILED", f"Planejamento por IA falhou nas unidades {win[0]['i']}–{win[-1]['i']}; usando "
+                  "agrupamento automático", detail=repr(err), severity="warning")
         return _validate(_fallback_window(win, avg, lang), win[0]["i"], win[-1]["i"], media_style, bible)
+
+    def plan_window(wi: int, bible: dict) -> PlanWindow:
+        return plan_units(windows[wi], f"window {wi + 1} of {len(windows)}", bible)
 
     # Etapa 1: Bíblia de Contexto (1 chamada por produção; reaproveitada se a etapa for retomada)
     ctx.progress(0.05, "Lendo o roteiro: época, lugar, pessoas e ambiente")
