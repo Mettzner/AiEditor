@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import paths
-from .api import channels, media, productions, settings, system
+from .api import channels, media, productions, review, settings, system
 from .db import init_db, session_scope
 from .purge import purge_orphans
 
@@ -73,7 +73,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-for module in (system, channels, productions, settings, media):
+for module in (system, channels, productions, settings, media, review):
     app.include_router(module.router, prefix="/api")
 
 # frontend estático DEPOIS das rotas da API (app instalado, ou AIEDITOR_SERVE_WEB=1 com web/out)

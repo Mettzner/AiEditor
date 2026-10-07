@@ -151,7 +151,7 @@ def still_valid(step: str, job: Path, script: str, config: dict, settings: dict)
 # ---------------------------------------------------------------- invalidação por cena
 SCENE_FP_FIELDS = ("text", "start", "end", "subject", "queries", "visual_intent", "must_show", "must_avoid",
                    "context_id", "visual_role", "required_identity", "source", "documentary_query", "data_points",
-                   "data_source", "must_not_imply")
+                   "data_source", "must_not_imply", "entity_ids", "entity_rev")
 
 
 def scene_fingerprint(scene: dict) -> str:

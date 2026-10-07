@@ -371,6 +371,71 @@ export interface YoutubeReference {
   pending: string | null;
 }
 
+export type ValidationStatus = "validated" | "unvalidated" | "review_required" | "rejected";
+export type ReviewFlag = "identity_uncertain" | "no_vision" | "low_score" | "claim_without_source" | "review_required";
+
+export interface ReviewAlternative {
+  index: number;
+  provider: string;
+  title: string;
+  page_url: string | null;
+  thumbnail: string | null;
+  score: number | null;
+  method: string | null;
+  reason: string | null;
+  source: string | null;
+}
+
+export interface ReviewScene {
+  id: string;
+  start: number;
+  end: number;
+  text: string;
+  meaning: string | null;
+  subject: string | null;
+  entities: { id: string; name: string; scientific_name: string | null }[];
+  visual_role: string;
+  required_identity: string;
+  unresolved: string[];
+  claims: { id: string; quote: string; needs_source: boolean }[];
+  documentary_query: string;
+  source: string;
+  provider: string | null;
+  title: string | null;
+  page_url: string | null;
+  author: string | null;
+  license: string | null;
+  obtained_how: string | null;
+  asset: string | null;
+  is_image: boolean | null;
+  in_point: number | null;
+  out_point: number | null;
+  clip_duration: number | null;
+  score: number | null;
+  seen: string | null;
+  method: string | null;
+  validation: { status: ValidationStatus; score_basis: string; reasons: string[] };
+  segment_check: { status: string; reason?: string } | null;
+  pinned: boolean;
+  alternatives: ReviewAlternative[];
+  references: YoutubeReference[];
+  flags: ReviewFlag[];
+}
+
+export interface ReviewPayload {
+  production: { id: number; title: string; status: ProductionStatus; language: string; cost_actual: number };
+  scenes: ReviewScene[];
+  metrics: {
+    by_source: Record<string, { scenes: number; seconds: number; validated: number }>;
+    validation: Record<ValidationStatus, number>;
+    segments: { unique_assets: number; segments: number; reused_assets: number } | null;
+    youtube_references: number;
+    search: { searches: number | null; vision_calls: number | null; cache: Record<string, number> | null };
+    cost_by_task: Record<string, { settled: number; estimated_usd: number; actual_usd: number; unknown_price: number }>;
+  };
+  languages: { code: string; name: string }[];
+}
+
 export interface Price {
   id: number;
   provider: string;
@@ -428,6 +493,32 @@ export const api = {
   },
 
   productions: () => request<Production[]>("/productions"),
+  productionsPage: async (limit: number, offset: number) => {
+    const res = await fetch(`${API_URL}/productions?limit=${limit}&offset=${offset}`);
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return { items: (await res.json()) as Production[], total: Number(res.headers.get("X-Total-Count") ?? 0) };
+  },
+  productionIds: () => request<number[]>("/productions/ids"),
+  review: (id: number) => request<ReviewPayload>(`/productions/${id}/review`),
+  replaceAsset: (id: number, sid: string, body: { alternative?: number; authorized_media_id?: number }) =>
+    request<{ ok: boolean }>(`/productions/${id}/scenes/${sid}/replace`, json("POST", body)),
+  pinAsset: (id: number, sid: string, pinned: boolean) =>
+    request<{ ok: boolean }>(`/productions/${id}/scenes/${sid}/pin`, json("POST", { pinned })),
+  editInterval: (id: number, sid: string, in_point: number) =>
+    request<{ ok: boolean }>(`/productions/${id}/scenes/${sid}/interval`, json("POST", { in_point })),
+  searchMore: (id: number, sid: string, queries: string[]) =>
+    request<{ ok: boolean; found: number; searches: number; vision_calls: number; budget_blocked: boolean }>(
+      `/productions/${id}/scenes/${sid}/search-more`,
+      json("POST", { queries }),
+    ),
+  fixInterpretation: (id: number, sid: string, body: Record<string, unknown>) =>
+    request<{ ok: boolean }>(`/productions/${id}/scenes/${sid}/interpretation`, json("PATCH", body)),
+  fixEntity: (id: number, eid: string, body: { name?: string; aliases?: string[]; scientific_name?: string }) =>
+    request<{ ok: boolean }>(`/productions/${id}/entities/${eid}`, json("PATCH", body)),
+  fixLanguage: (id: number, video_language: string) =>
+    request<{ ok: boolean }>(`/productions/${id}/language`, json("POST", { video_language })),
+  rerender: (id: number) => request<{ ok: boolean }>(`/productions/${id}/rerender`, { method: "POST" }),
+  assetUrl: (id: number, path: string) => `${API_URL}/productions/${id}/assets/${path}`,
   createProduction: (fd: FormData) => request<Production>("/productions", { method: "POST", body: fd }),
   cancel: (id: number) => request(`/productions/${id}/cancel`, { method: "POST" }),
   retry: (id: number) => request(`/productions/${id}/retry`, { method: "POST" }),

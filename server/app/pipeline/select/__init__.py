@@ -146,8 +146,8 @@ class Selector:
         if (ctx.dir / "plan.json").exists():
             self.scene_fp = {s["id"]: scene_fingerprint(s) for s in ctx.read_json("plan.json")["scenes"]}
             # cena que mudou no plano perde só a própria escolha (o resto da seleção é aproveitado)
-            stale = [sid for sid, e in self.selection.items()
-                     if sid not in self.scene_fp or (e.get("scene_fp") and e["scene_fp"] != self.scene_fp[sid])]
+            stale = [sid for sid, e in self.selection.items() if not e.get("pinned") and (
+                sid not in self.scene_fp or (e.get("scene_fp") and e["scene_fp"] != self.scene_fp[sid]))]
             for sid in stale:
                 self.selection.pop(sid, None)
             self.invalidated_scenes = stale
@@ -897,6 +897,11 @@ class Selector:
         allowance, allowed = scene_style(scene, self.media_style)
         if entry.get("source") == "ai_image" and is_historical(scene):
             entry["strategy"] = STRATEGY_LABEL["ai_period"]
+        # alternativas para a revisão (trocar sem nova busca), com a nota e o que a IA viu em cada uma
+        entry["alternatives"] = [
+            {"candidate": o.candidate.to_dict(), "score": o.score, "pos": o.pos, "method": o.method,
+             "source": o.source, "reason": o.seen, "realism": o.realism}
+            for i, o in enumerate(d.options) if i != d.pick][:5] if d.entry is None else []
         entry.update(planned_source=d.planned, vision_calls=stats.get("vision_calls", 0),
                      searches=stats.get("searches", 0), queries_used=d.queries,
                      must_avoid_used=list(dict.fromkeys(d.must_avoid + scene_anachronisms(scene))),
@@ -956,7 +961,8 @@ class Selector:
                 if self.youtube_ingest != "download_cc":
                     raise NoCandidate("modo referência: vídeo do YouTube sem arquivo autorizado não é baixado")
                 dest = self.ctx.path("assets", f"{sid}.mp4")
-                youtube.download_segment(c.external_id, in_point, in_point + dur + 0.5, dest)
+                youtube.download_segment(c.external_id, in_point, in_point + dur + 0.5, dest,
+                                         cancel=self.ctx.is_cancelled)
                 asset_in, resolution = 0.0, [c.width, c.height]
             elif c.provider in ("authorized_youtube", "authorized_local"):
                 with session_scope() as s:
@@ -972,13 +978,13 @@ class Selector:
                 assert rend
                 ext = ".png" if rend.url.lower().split("?")[0].endswith(".png") else ".jpg"
                 dest = self.ctx.path("assets", f"{sid}{ext}")
-                download(rend.url, dest)
+                download(rend.url, dest, cancel=self.ctx.is_cancelled)
                 asset_in, resolution = 0.0, [rend.width, rend.height]
             else:
                 rend = c.best_rendition()
                 assert rend
                 dest = self.ctx.path("assets", f"{sid}.mp4")
-                download(rend.url, dest)
+                download(rend.url, dest, cancel=self.ctx.is_cancelled)
                 asset_in, resolution = in_point, [rend.width, rend.height]
         except Exception:
             self.segments.release(c.key, in_point, planned_out, channel)

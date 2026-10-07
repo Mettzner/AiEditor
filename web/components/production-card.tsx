@@ -1,10 +1,22 @@
 "use client";
 
 import { useState } from "react";
-import { Check, ChevronDown, Copy, ExternalLink, FolderOpen, RotateCcw, Sparkles, Trash2, X } from "lucide-react";
+import Link from "next/link";
+import {
+  Check,
+  ChevronDown,
+  Copy,
+  ExternalLink,
+  FolderOpen,
+  ListChecks,
+  RotateCcw,
+  Sparkles,
+  Trash2,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Progress } from "@/components/ui/progress";
@@ -110,6 +122,11 @@ export function ProductionCard({ p }: { p: Production }) {
             <div className="flex shrink-0 items-center gap-1.5">
               {(p.status === "done" || p.status === "failed" || ["direct", "render", "upload"].includes(p.step ?? "")) && (
                 <DirectionDialog productionId={p.id} title={p.title} />
+              )}
+              {(p.status === "done" || p.status === "failed" || p.status === "cancelled") && (
+                <Link href={`/revisao/?id=${p.id}`} className={buttonVariants({ variant: "outline", size: "sm" })}>
+                  <ListChecks /> Revisar
+                </Link>
               )}
               {(p.status === "running" || p.status === "queued") && (
                 <Button variant="ghost" size="sm" onClick={() => act(() => api.cancel(p.id), "Cancelamento pedido")}>
