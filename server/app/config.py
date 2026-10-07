@@ -50,8 +50,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     ],
     # first: toda cena real tenta o YouTube primeiro enquanto houver cota no dia (zera à meia-noite do Pacífico);
     # sem cota, vai direto para bancos de vídeo e imagens. Desligado, só a fatia youtube_pct do preset tenta.
+    # Cota por bucket (documentação oficial, 2026-10): search.list tem bucket próprio (100 chamadas/dia); os demais
+    # endpoints dividem 10.000 unidades. Ajuste os limites se o Google aprovou outra cota para o seu projeto.
+    # daily_quota/quota_reserve valem só no regime "legacy_units" (saldo único antigo).
     "youtube": {"enabled": True, "first": True, "creative_commons_only": True, "daily_quota": 10_000,
-                "quota_reserve": 500, "max_duration": 1800},
+                "quota_reserve": 500, "max_duration": 1800, "quota_accounting_mode": "separate_buckets",
+                "buckets": {"search": {"daily_limit": 100, "reserve": 5},
+                            "default": {"daily_limit": 10_000, "reserve": 200}}},
     "ai_image_providers": [
         {"id": "darkvi", "enabled": True, "priority": 1},
     ],
@@ -84,8 +89,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "selection": {
         "stock_queries_per_scene": 3,
         "youtube_queries_per_scene": 1,
-        "results_per_query": 15,
-        "search_cache_days": 7,
+        "results_per_query": 15,  # bancos de vídeo/foto (os modos fast/precise ajustam este)
+        # YouTube: até 50 por página (1 chamada do bucket de busca, igual a 10 resultados). Os modos não mexem nele.
+        "youtube_results_per_query": 50,
+        # validade do cache de busca por provedor, em horas (o Pixabay exige ≥ 24 h); dados vencidos são apagados
+        "search_cache_ttl_hours": {"default": 168, "pexels": 168, "pixabay": 168, "youtube": 168, "archives": 336},
+        "search_error_ttl_seconds": 120,
         "min_height": 1080,
         "youtube_min_height": 720,
         "min_aspect": 1.55,

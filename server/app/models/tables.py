@@ -83,13 +83,28 @@ class ProviderPrice(SQLModel, table=True):
 
 
 class SearchCache(SQLModel, table=True):
-    """Resultados de busca por provedor + query normalizada + quantidade (validade em settings)."""
+    """Resultados de busca por provedor + query normalizada + quantidade (validade por provedor em settings).
+
+    status: ok (com resultados) | empty (busca real sem resultado, cacheável) | error (falha transitória, TTL curto).
+    """
 
     key: str = Field(primary_key=True)
     provider: str
     query: str
     results: list[Any] = Field(default_factory=list, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=now)
+    status: str = "ok"
+    expires_at: Optional[datetime] = None
+    error: Optional[str] = None
+    next_page_token: Optional[str] = None
+
+
+class CacheLease(SQLModel, table=True):
+    """Single-flight entre processos: quem segura a chave busca; os outros esperam o resultado no cache."""
+
+    key: str = Field(primary_key=True)
+    owner: str
+    expires_at: float  # time.time()
 
 
 class VisionCache(SQLModel, table=True):
@@ -102,11 +117,34 @@ class VisionCache(SQLModel, table=True):
 
 
 class YtQuota(SQLModel, table=True):
-    """Unidades da YouTube Data API gastas por dia (fuso America/Los_Angeles, quando a cota zera)."""
+    """LEGADO (até a migração 002): unidades da YouTube Data API num saldo único por dia. Mantida só para leitura
+    histórica; o controle atual fica em QuotaUsage, por bucket."""
 
     day: str = Field(primary_key=True)  # AAAA-MM-DD no horário do Pacífico
     used: int = 0
     exhausted: bool = False
+    updated_at: datetime = Field(default_factory=now)
+
+
+class QuotaUsage(SQLModel, table=True):
+    """Cota de API por provedor, bucket e dia (YouTube: fuso do Pacífico). Reserva atômica no SQLite.
+
+    unit: "calls" (ex.: search.list, bucket próprio) ou "units" (demais endpoints). `attempts` conta pedidos
+    realmente enviados (inclui retentativas); `uncertain` os que falharam sem resposta (contados por precaução).
+    """
+
+    id: str = Field(primary_key=True)  # "<provider>:<bucket>:<day>"
+    provider: str = Field(index=True)
+    bucket: str
+    day: str = Field(index=True)
+    unit: str = "units"
+    used: int = 0
+    attempts: int = 0
+    uncertain: int = 0
+    exhausted: bool = False
+    blocked_until: Optional[float] = None  # time.time(); limite por minuto
+    block_reason: Optional[str] = None
+    origin: Optional[str] = None  # "migrated_estimate" quando veio do saldo único legado
     updated_at: datetime = Field(default_factory=now)
 
 

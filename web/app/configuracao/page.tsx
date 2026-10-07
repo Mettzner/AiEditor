@@ -275,15 +275,24 @@ export default function ConfiguracaoPage() {
               <p>
                 Cota do YouTube hoje ({ytQuota.day}, horário do Pacífico):{" "}
                 <b className={ytQuota.exhausted || ytQuota.searches_left === 0 ? "text-amber-300" : ""}>
-                  {ytQuota.available} un. disponíveis
-                </b>{" "}
-                · ≈ {ytQuota.searches_left} cena(s) · {ytQuota.used} usadas de {ytQuota.daily_quota} (reserva de{" "}
-                {ytQuota.reserve})
+                  ≈ {ytQuota.searches_left} busca(s) disponíveis
+                </b>
               </p>
+              <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+                {Object.values(ytQuota.buckets).map((b) => (
+                  <li key={b.bucket}>
+                    {b.bucket === "search" ? "Buscas" : b.bucket === "default" ? "Detalhes e demais" : "Saldo único (legado)"}
+                    : {b.used} de {b.daily_limit} {b.unit === "calls" ? "chamadas" : "unidades"} (reserva {b.reserve})
+                    {b.uncertain > 0 && ` · ${b.uncertain} sem resposta, contadas por precaução`}
+                    {b.exhausted && " · esgotado pelo Google"}
+                    {b.minute_blocked && " · limite por minuto, aguarde"}
+                  </li>
+                ))}
+              </ul>
               <p className="text-xs text-muted-foreground">
                 {ytQuota.exhausted
                   ? "O Google recusou por cota hoje: as cenas do YouTube vão para os bancos até a meia-noite do Pacífico."
-                  : "Zera à meia-noite do Pacífico (4h ou 5h em Brasília). Cada cena do YouTube gasta 101 unidades; buscas em cache não gastam."}
+                  : "Zera à meia-noite do Pacífico (4h ou 5h em Brasília). Buscas em cache não gastam cota; cada página nova é uma busca."}
               </p>
             </div>
           )}

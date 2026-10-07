@@ -22,6 +22,10 @@ def _columns(conn: Connection, table: str) -> set[str]:
     return {row[1] for row in conn.execute(text(f"PRAGMA table_info('{table}')"))}
 
 
+def _tables(conn: Connection) -> set[str]:
+    return {r[0] for r in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))}
+
+
 def add_column(conn: Connection, table: str, column: str, ddl: str) -> None:
     """Adiciona a coluna se ainda não existir (ex.: add_column(c, "production", "notes", "TEXT"))."""
     if column not in _columns(conn, table):
@@ -32,8 +36,46 @@ def _m001_baseline(conn: Connection) -> None:
     """Esquema da versão 1.0.0: todas as tabelas já foram criadas pelo create_all."""
 
 
+def _m002_quota_buckets_and_cache_status(conn: Connection) -> None:
+    """Cota do YouTube por bucket (search.list tem bucket próprio, em chamadas) e cache de busca com status/TTL.
+
+    O saldo único legado (yt_quota, em unidades: busca=100, detalhes=1) é copiado para o bucket "legacy" na mesma
+    unidade, sem conversão. Só o dia corrente ganha uma estimativa conservadora nos buckets novos (cada busca do
+    regime antigo = 1 search.list + 1 videos.list), marcada como origin="migrated_estimate".
+    """
+    tables = _tables(conn)
+    if "searchcache" in tables:
+        add_column(conn, "searchcache", "status", "VARCHAR DEFAULT 'ok' NOT NULL")
+        add_column(conn, "searchcache", "expires_at", "DATETIME")
+        add_column(conn, "searchcache", "error", "VARCHAR")
+        add_column(conn, "searchcache", "next_page_token", "VARCHAR")
+        conn.execute(text("UPDATE searchcache SET status = CASE WHEN results = '[]' THEN 'empty' ELSE 'ok' END"))
+    if "ytquota" not in tables or "quotausage" not in tables:  # ytquota: nome que o SQLModel deu à YtQuota
+        return
+    legacy_table = "ytquota"
+    from .providers.youtube.quota import pacific_day
+
+    today = pacific_day()
+    rows = list(conn.execute(text(f"SELECT day, used, exhausted FROM {legacy_table}")))
+    for day, used, exhausted in rows:
+        conn.execute(text("INSERT OR IGNORE INTO quotausage (id, provider, bucket, day, unit, used, attempts, uncertain, "
+                          "exhausted, origin, updated_at) VALUES (:id, 'youtube', 'legacy', :day, 'units', :used, 0, 0, "
+                          ":ex, 'legacy_yt_quota', CURRENT_TIMESTAMP)"),
+                     {"id": f"youtube:legacy:{day}", "day": day, "used": int(used or 0), "ex": bool(exhausted)})
+        if day != today or not used:
+            continue
+        searches = -(-int(used) // 101)  # arredonda para cima: incerteza conta contra a cota
+        for bucket, unit in (("search", "calls"), ("default", "units")):
+            conn.execute(text("INSERT OR IGNORE INTO quotausage (id, provider, bucket, day, unit, used, attempts, "
+                              "uncertain, exhausted, origin, updated_at) VALUES (:id, 'youtube', :b, :day, :u, :n, 0, "
+                              "0, :ex, 'migrated_estimate', CURRENT_TIMESTAMP)"),
+                         {"id": f"youtube:{bucket}:{day}", "b": bucket, "day": day, "u": unit, "n": searches,
+                          "ex": bool(exhausted) and bucket == "search"})
+
+
 MIGRATIONS: list[tuple[int, str, Callable[[Connection], None]]] = [
     (1, "baseline 1.0.0", _m001_baseline),
+    (2, "cota do YouTube por bucket e status do cache de busca", _m002_quota_buckets_and_cache_status),
 ]
 
 

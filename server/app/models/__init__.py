@@ -1,8 +1,8 @@
 from sqlmodel import select
 
 from .preset import CREATION_FIELDS, MusicConfig, Preset, ProductionConfig, SubtitleStyle
-from .tables import (Channel, Issue, LlmCache, Production, ProductionStep, ProviderPrice, SearchCache, UsedAsset,
-                     VisionCache, YtQuota, now)
+from .tables import (CacheLease, Channel, Issue, LlmCache, Production, ProductionStep, ProviderPrice, QuotaUsage,
+                     SearchCache, UsedAsset, VisionCache, YtQuota, now)
 
 # Valores de partida, editáveis na Configuração. Confira os preços atuais de cada provedor.
 # Claude: preço por milhão de tokens, por modelo: entrada, saída, gravação de cache (5 min) e leitura de cache.
@@ -36,6 +36,8 @@ def seed_defaults() -> None:
 
 
 __all__ = [
+    "CacheLease",
+    "QuotaUsage",
     "CREATION_FIELDS",
     "Channel",
     "Issue",

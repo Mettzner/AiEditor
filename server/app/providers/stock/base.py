@@ -34,6 +34,12 @@ class Candidate:
     # Frames grátis em ordem temporal (sem baixar o vídeo) e sua posição relativa no clipe (0–1).
     preview_frames: list[str] = field(default_factory=list)
     frame_positions: list[float] = field(default_factory=list)
+    # metadados de procedência/diversidade (YouTube); vazios nos bancos e nos caches antigos
+    published_at: str = ""
+    channel_id: str = ""
+    description: str = ""
+    # descrição observada por uma IA de visão em outra avaliação (reaproveitável, nunca vale como aprovação)
+    observed: str = ""
 
     @property
     def key(self) -> str:

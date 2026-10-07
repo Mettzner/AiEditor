@@ -81,9 +81,12 @@ def estimate(config: ProductionConfig, script: str, audio_seconds: float | None 
             "darkvi_enough": darkvi.get("remaining") is None or ai_images <= int(darkvi["remaining"]),
             "youtube_scenes": yt_scenes,
             "youtube_scenes_fit": yt_fit,
-            "youtube_units_needed": yt_scenes * (yt_quota.SEARCH_COST + yt_quota.VIDEOS_COST),
+            # na unidade do bucket de busca (chamadas no regime por bucket; unidades no legado)
+            "youtube_units_needed": yt_scenes * yt_quota.search_call_units(),
             "youtube_available": yt["available"],
             "youtube_daily_quota": yt["daily_quota"],
+            "youtube_quota_unit": yt["unit"],
+            "youtube_quota_mode": yt["mode"],
         },
         "time_minutes": round(minutes),
     }

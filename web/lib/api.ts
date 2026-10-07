@@ -290,8 +290,25 @@ export interface SetupStatus {
   desktop: boolean;
 }
 
+export interface YoutubeQuotaBucket {
+  bucket: string;
+  unit: "calls" | "units";
+  used: number;
+  attempts: number;
+  uncertain: number;
+  exhausted: boolean;
+  minute_blocked: boolean;
+  daily_limit: number;
+  reserve: number;
+  available: number;
+  origin: string | null;
+}
+
 export interface YoutubeQuota {
   day: string;
+  mode: "separate_buckets" | "legacy_units";
+  buckets: Record<string, YoutubeQuotaBucket>;
+  unit: "calls" | "units";
   used: number;
   exhausted: boolean;
   daily_quota: number;
