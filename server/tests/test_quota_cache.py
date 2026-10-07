@@ -241,7 +241,7 @@ def test_single_flight_entre_processos_espera_a_concessao():
     """Com a concessão de outro processo ativa, a busca espera e usa o resultado gravado por ele."""
     key = search.cache_key("pexels", "video", "shared", 15, "en")
     with session_scope() as s:
-        s.add(CacheLease(key=key, owner="outro-processo", expires_at=time.time() + 30))
+        s.add(CacheLease(key=f"search:{key}", owner="outro-processo", expires_at=time.time() + 30))
         s.commit()
 
     def other_process_finishes():
