@@ -113,7 +113,7 @@ def env(monkeypatch):
     stock = [FakeStock("pexels"), FakeStock("pixabay")]
     vision = FakeVision()
     monkeypatch.setattr(sel_mod, "enabled_providers", lambda: stock)
-    monkeypatch.setattr(sel_mod, "download", lambda url, dest, headers=None: dest.write_bytes(b"x") or dest)
+    monkeypatch.setattr(sel_mod, "download", lambda url, dest, headers=None, **kw: dest.write_bytes(b"x") or dest)
     monkeypatch.setattr(sel_mod, "get_secret", lambda p: "k")
     monkeypatch.setattr(funnel, "build_sheet", lambda rows: b"jpeg")
     monkeypatch.setattr(gemini, "available", lambda: True)
@@ -206,7 +206,7 @@ def test_3b_cota_esgotada_usa_resultado_do_youtube_em_cache(env):
     cached_search("youtube", "video", "dark country road", per_page, "en", lambda: [c])
     quota.mark_exhausted(bucket="search")
     env["monkeypatch"].setattr(yt, "request", lambda *a, **k: pytest.fail("chamou o YouTube"))
-    env["monkeypatch"].setattr(yt, "download_segment", lambda vid, a, b, dest: dest.write_bytes(b"v") or dest)
+    env["monkeypatch"].setattr(yt, "download_segment", lambda vid, a, b, dest, **kw: dest.write_bytes(b"v") or dest)
     ctx = make_ctx()
     entry = sel_mod.Selector(ctx).select_scene(scene(source="youtube"))
     assert entry["source_used"] == "youtube" and entry["external_id"] == "cachedvid"
@@ -331,7 +331,7 @@ def test_download_tenta_proximo_colocado_antes_de_trocar_de_fonte(env):
 
     tried = []
 
-    def segment(video_id, start, end, dest):
+    def segment(video_id, start, end, dest, **kw):
         tried.append(video_id)
         if len(tried) == 1:
             raise RuntimeError("Requested format is not available")  # vencedor quadrado

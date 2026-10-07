@@ -23,6 +23,10 @@ class FFmpegError(RuntimeError):
         self.log = log
 
 
+class FFmpegCancelled(FFmpegError):
+    """A produção foi cancelada: o processo do ffmpeg foi encerrado no meio."""
+
+
 def _fresh_windows_path() -> str:
     """PATH atual do registro (Máquina + Usuário). Processos abertos antes de instalar o FFmpeg,
     como um terminal do VS Code, herdam um PATH antigo que ainda não tem a pasta nova."""
@@ -114,7 +118,8 @@ STALL_SECONDS = 120
 
 
 def run(args: Sequence[str], cwd: Path | None = None, on_progress: Callable[[float], None] | None = None,
-        total_seconds: float | None = None, stall_seconds: float = STALL_SECONDS) -> None:
+        total_seconds: float | None = None, stall_seconds: float = STALL_SECONDS,
+        cancel: Callable[[], bool] | None = None) -> None:
     """Executa ffmpeg. Com on_progress, lê `-progress pipe:1` e reporta segundos processados.
 
     Se o tempo processado não avançar por `stall_seconds`, o processo é encerrado (FFmpegError) em vez de
@@ -124,26 +129,45 @@ def run(args: Sequence[str], cwd: Path | None = None, on_progress: Callable[[flo
     if on_progress:
         cmd += ["-progress", "pipe:1", "-nostats"]
     cmd += list(args)
-    if not on_progress:
+    if not on_progress and not cancel:
         proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
                               creationflags=_CREATE_NO_WINDOW)
         if proc.returncode != 0:
             raise FFmpegError(f"ffmpeg saiu com código {proc.returncode}", proc.stderr[-6000:])
+        return
+    if not on_progress:  # só cancelamento: espera o processo conferindo a cada segundo
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as err:
+            proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.DEVNULL, stderr=err, stdin=subprocess.DEVNULL,
+                                    creationflags=_CREATE_NO_WINDOW)
+            while proc.poll() is None:
+                if cancel and cancel():
+                    proc.kill()
+                    proc.wait()
+                    raise FFmpegCancelled("produção cancelada durante o ffmpeg")
+                time.sleep(0.5)
+            err.seek(0)
+            stderr = err.read()
+        if proc.returncode != 0:
+            raise FFmpegError(f"ffmpeg saiu com código {proc.returncode}", stderr[-6000:])
         return
     # stderr vai para arquivo: com PIPE, um stderr cheio bloqueia o ffmpeg enquanto lemos o stdout
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as err:
         proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=err, stdin=subprocess.DEVNULL,
                                 text=True, encoding="utf-8", errors="replace", creationflags=_CREATE_NO_WINDOW)
         assert proc.stdout
-        state = {"secs": -1.0, "changed": time.monotonic(), "stalled": False}
+        state = {"secs": -1.0, "changed": time.monotonic(), "stalled": False, "cancelled": False}
 
         def watchdog() -> None:
             while proc.poll() is None:
+                if cancel and cancel():
+                    state["cancelled"] = True
+                    proc.kill()
+                    return
                 if time.monotonic() - state["changed"] > stall_seconds:
                     state["stalled"] = True
                     proc.kill()
                     return
-                time.sleep(2)
+                time.sleep(1)
 
         threading.Thread(target=watchdog, daemon=True).start()
         for line in proc.stdout:
@@ -156,6 +180,8 @@ def run(args: Sequence[str], cwd: Path | None = None, on_progress: Callable[[flo
                     state["secs"], state["changed"] = secs, time.monotonic()
                 on_progress(min(1.0, secs / total_seconds) if total_seconds else secs)
         code = proc.wait()
+        if state["cancelled"]:
+            raise FFmpegCancelled("produção cancelada durante o ffmpeg")
         if state["stalled"]:
             err.seek(0)
             raise FFmpegError(f"ffmpeg ficou {stall_seconds:.0f}s sem avançar (parado em {state['secs']:.1f}s)",

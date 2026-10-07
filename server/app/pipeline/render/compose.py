@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 
 from ...directions import get_direction
-from ...worker.context import JobContext, StepError
+from ...worker.context import Cancelled, JobContext, StepError
 from ..context import GRADE_FILTERS
 from . import anim, ffmpeg
 from .fonts import find_font
@@ -97,7 +97,8 @@ def _normalize_scene(ctx: JobContext, scene: dict, frames: int, out: Path) -> No
               f"{graded}format=yuv420p,tpad=stop_mode=clone:stop_duration={frames / FPS:.3f}")
         args = ["-ss", f"{scene.get('in', 0):.3f}", "-i", str(asset), "-vf", vf]
     tmp = out.with_suffix(".tmp.mp4")
-    ffmpeg.run(args + ["-frames:v", str(frames)] + _intermediate_codec(ctx) + [str(tmp)])
+    ffmpeg.run(args + ["-frames:v", str(frames)] + _intermediate_codec(ctx) + [str(tmp)],
+               cancel=ctx.is_cancelled)
     tmp.replace(out)
 
 
@@ -114,7 +115,7 @@ def _crossfade_in(ctx: JobContext, prev_file: Path, prev_frames: int, raw: Path,
          f"format=yuv420p[v]")
     tmp = out.with_suffix(".tmp.mp4")
     ffmpeg.run(["-i", str(prev_file), "-i", str(raw), "-filter_complex", f, "-map", "[v]", "-frames:v", str(frames)]
-               + _intermediate_codec(ctx) + [str(tmp)])
+               + _intermediate_codec(ctx) + [str(tmp)], cancel=ctx.is_cancelled)
     tmp.replace(out)
 
 
@@ -134,7 +135,12 @@ def run(ctx: JobContext) -> str:
         raise StepError("RENDER_FAILED", "FFmpeg não encontrado: instale a build completa e reinicie o worker")
     ctx.progress(0.0, "Aguardando render de outra produção")
     with ctx.render_lock:
-        return _render(ctx, timeline)
+        try:
+            return _render(ctx, timeline)
+        except StepError as e:
+            if ctx.is_cancelled():  # o ffmpeg foi encerrado pelo cancelamento, não falhou
+                raise Cancelled() from e
+            raise
 
 
 def _render(ctx: JobContext, tl: dict) -> str:
@@ -311,7 +317,7 @@ def _bake_overlays(ctx: JobContext, scene_mp4: Path, scene_start: float, items: 
     tmp = out.with_suffix(".tmp.mp4")
     ffmpeg.run(["-i", scene_mp4.relative_to(ctx.dir).as_posix(), "-filter_complex", ";".join(f), "-map", "[v]",
                 "-frames:v", str(frames)] + _intermediate_codec(ctx) + [tmp.relative_to(ctx.dir).as_posix()],
-               cwd=ctx.dir)
+               cwd=ctx.dir, cancel=ctx.is_cancelled)
     tmp.replace(out)
 
 
@@ -424,6 +430,6 @@ def _final_pass(ctx: JobContext, tl: dict, concat: Path, out: Path, use_amf: boo
                      "-t", f"{duration:.3f}", *_final_encoder(ctx, use_amf), "-r", str(FPS),
                      "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart",
                      str(tmp.relative_to(ctx.dir))]
-    ffmpeg.run(args, cwd=ctx.dir, total_seconds=duration,
+    ffmpeg.run(args, cwd=ctx.dir, total_seconds=duration, cancel=ctx.is_cancelled,
                on_progress=lambda frac: ctx.progress(0.55 + 0.45 * frac, f"Renderizando {frac:.0%}"))
     tmp.replace(out)

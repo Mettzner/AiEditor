@@ -15,6 +15,13 @@ if os.environ.get("AIEDITOR_LIVE") != "1":
     # faria chamadas reais. Testes da reserva ligam o Claude com chave e chamada simuladas.
     update_settings({"vision": {"provider": "gemini"}})
 
+    import keyring  # noqa: E402
+    from keyring.backends import null  # noqa: E402
+
+    # chaves reais do Credential Manager ficam invisíveis aos testes (nada de chamada real nem de gasto); cada
+    # teste que precisa de chave a simula
+    keyring.set_keyring(null.Keyring())
+
     import httpx  # noqa: E402
 
     from app.providers import http as _http  # noqa: E402

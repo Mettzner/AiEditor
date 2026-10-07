@@ -40,6 +40,31 @@ def remove_job_files(production_id: int) -> None:
                          f"pasta se estiverem abertos e tente de novo ({e.strerror or e})") from e
 
 
+# o que pode ser refeito a partir dos artefatos preservados (plano, seleção, assets, timeline)
+INTERMEDIATE_DIRS = ("render/scenes", "render/overlays")
+INTERMEDIATE_FILES = ("render/scenes.txt", "render/sfx.wav")
+
+
+def cleanup_intermediates(production_id: int) -> dict:
+    """Limpeza segura: apaga só os intermediários do render (refeitos sob demanda). Mantém output/ (vídeo,
+    manifesto, créditos, relatórios), plan/selection/bíblia, assets e a narração. Devolve bytes liberados."""
+    job = JOBS_DIR / str(production_id)
+    freed, removed = 0, 0
+    for rel in INTERMEDIATE_DIRS:
+        d = job / rel
+        if d.exists():
+            freed += sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+            removed += sum(1 for f in d.rglob("*") if f.is_file())
+            _rmtree(d)
+    for rel in INTERMEDIATE_FILES:
+        f = job / rel
+        if f.exists():
+            freed += f.stat().st_size
+            removed += 1
+            f.unlink()
+    return {"freed_bytes": freed, "files": removed}
+
+
 def purge_production(s: Session, p: Production) -> None:
     if p.status in ACTIVE:
         raise PurgeError("Cancele a produção antes de excluir")

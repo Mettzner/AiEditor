@@ -230,3 +230,60 @@ def test_host_e_origem_externos_sao_recusados(api):
     assert c.post("/api/app/show", headers={"origin": "https://evil.example"}).status_code == 403
     assert c.get("/api/health").status_code == 200
     assert c.post("/api/app/show", headers={"origin": "http://localhost:3000"}).status_code == 200
+
+
+def test_backup_antes_de_migrar(tmp_path, monkeypatch):
+    import sqlite3
+
+    from sqlalchemy import create_engine
+
+    from app import db
+
+    path = tmp_path / "aieditor.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE schema_version (version INTEGER NOT NULL, name TEXT, applied_at TEXT)")
+    con.execute("INSERT INTO schema_version (version, name) VALUES (1, 'baseline')")
+    con.execute("CREATE TABLE dados (x TEXT)")
+    con.execute("INSERT INTO dados VALUES ('valioso')")
+    con.commit()
+    con.close()
+    monkeypatch.setattr(db, "DB_PATH", path)
+    monkeypatch.setattr(db, "engine", create_engine(f"sqlite:///{path}"))
+    dest = db.backup_before_migrations()
+    assert dest and dest.exists()
+    assert sqlite3.connect(dest).execute("SELECT x FROM dados").fetchone() == ("valioso",)
+
+
+def test_limpeza_preserva_saidas_e_manifestos(api):
+    from app.config import job_dir
+
+    c, _ = api
+    with session_scope() as s:
+        p = Production(title="limpa", script="x", config={}, status="done")
+        s.add(p)
+        s.commit()
+        s.refresh(p)
+        pid = p.id
+    job = job_dir(pid)
+    for rel in ("render/scenes/s001.mp4", "render/overlays/o001.mkv", "output/final.mp4", "output/manifest.json",
+                "plan.json", "assets/s001.mp4"):
+        (job / rel).parent.mkdir(parents=True, exist_ok=True)
+        (job / rel).write_bytes(b"1234")
+    r = c.post(f"/api/productions/{pid}/cleanup").json()
+    assert r["files"] == 2 and r["freed_bytes"] == 8
+    assert not (job / "render" / "scenes").exists()
+    assert all((job / rel).exists() for rel in ("output/final.mp4", "output/manifest.json", "plan.json",
+                                                "assets/s001.mp4"))
+
+
+def test_versao_unica():
+    import json
+    import re
+
+    from app import paths
+
+    root = paths.REPO_ROOT
+    version = (root / "VERSION").read_text(encoding="utf-8").strip()
+    assert json.loads((root / "web" / "package.json").read_text(encoding="utf-8"))["version"] == version
+    assert re.search(r'^version = "([^"]+)"', (root / "server" / "pyproject.toml").read_text(encoding="utf-8"),
+                     re.M).group(1) == version

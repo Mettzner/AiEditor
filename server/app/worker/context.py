@@ -139,6 +139,16 @@ class JobContext:
                 s.add(p)
                 s.commit()
 
+    def is_cancelled(self) -> bool:
+        """Sem exceção, para subprocessos e downloads consultarem durante o trabalho (cache de 2 s)."""
+        t = time.monotonic()
+        if t - getattr(self, "_cancel_at", 0.0) < 2.0:
+            return getattr(self, "_cancel_flag", False)
+        with session_scope() as s:
+            status = s.exec(select(Production.status).where(Production.id == self.production_id)).first()
+        self._cancel_at, self._cancel_flag = t, status in ("cancel_requested", "cancelled")
+        return self._cancel_flag
+
     def check_cancel(self) -> None:
         with session_scope() as s:
             status = s.exec(select(Production.status).where(Production.id == self.production_id)).first()

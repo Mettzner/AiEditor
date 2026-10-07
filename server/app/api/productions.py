@@ -6,9 +6,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlmodel import Session, select, update
 
 from ..config import job_dir, load_settings
@@ -131,9 +132,25 @@ def _cards(s: Session, productions: list[Production]) -> list[dict]:
             for p in productions]
 
 
+SNAPSHOT_LIMIT = 30
+
+
 @router.get("/productions")
-def list_productions(s: Session = Depends(get_session)):
-    return _cards(s, list(s.exec(select(Production).order_by(Production.created_at.desc()))))
+def list_productions(response: Response, limit: int | None = Query(None, ge=1, le=500),
+                     offset: int = Query(0, ge=0), s: Session = Depends(get_session)):
+    """Histórico paginado (mais nova primeiro). Sem limit: todas (compatível com clientes antigos)."""
+    q = select(Production).order_by(Production.id.desc()).offset(offset)
+    if limit:
+        q = q.limit(limit)
+    total = s.exec(select(func.count()).select_from(Production)).one()
+    response.headers["X-Total-Count"] = str(total)
+    return _cards(s, list(s.exec(q)))
+
+
+@router.get("/productions/ids")
+def production_ids(s: Session = Depends(get_session)):
+    """Ids existentes (barato): a tela tira da lista o que foi excluído sem baixar todos os cards."""
+    return list(s.exec(select(Production.id)))
 
 
 @router.get("/productions/events")
@@ -151,15 +168,19 @@ async def production_events(request: Request):
         yield "retry: 1500\n\n"
         while not await request.is_disconnected() and asyncio.get_running_loop().time() < deadline:
             with session_scope() as s:
-                q = select(Production).order_by(Production.created_at.desc())
-                rows = list(s.exec(q))
-                changed = [p for p in rows if first or _aware(p.updated_at) > last]
-                if changed:
-                    last = max(_aware(p.updated_at) for p in rows)
+                if first:  # só a 1ª página; o resto vem pelo histórico paginado
+                    changed = list(s.exec(select(Production).order_by(Production.id.desc()).limit(SNAPSHOT_LIMIT)))
+                    newest = s.exec(select(func.max(Production.updated_at))).one()
+                else:  # incremental: só o que mudou desde o último envio (updated_at tem índice)
+                    changed = list(s.exec(select(Production).where(Production.updated_at > last)))
+                    newest = max((p.updated_at for p in changed), default=None)
+                if newest is not None:
+                    last = max(last, _aware(newest))
+                if changed or first:
                     event = "snapshot" if first else "update"
                     payload = json.dumps(_cards(s, changed), default=str, ensure_ascii=False)
                     yield f"event: {event}\ndata: {payload}\n\n"
-                elif not first:
+                else:
                     yield ": ping\n\n"
             first = False
             await asyncio.sleep(1.0)
@@ -362,6 +383,19 @@ def delete_production(production_id: int, s: Session = Depends(get_session)):
         raise HTTPException(409, str(e)) from e
     s.commit()
     return {"ok": True}
+
+
+@router.post("/productions/{production_id}/cleanup")
+def cleanup_production(production_id: int, s: Session = Depends(get_session)):
+    """Libera disco apagando só intermediários do render; vídeo, manifestos e decisões ficam."""
+    from ..purge import cleanup_intermediates
+
+    p = s.get(Production, production_id)
+    if not p:
+        raise HTTPException(404, "Produção não encontrada")
+    if p.status not in ("done", "failed", "cancelled"):
+        raise HTTPException(409, "Espere a produção terminar para limpar")
+    return cleanup_intermediates(production_id)
 
 
 @router.get("/productions/{production_id}/direction")

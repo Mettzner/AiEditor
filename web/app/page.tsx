@@ -5,7 +5,10 @@ import Link from "next/link";
 import { Plus, WifiOff } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { ProductionCard } from "@/components/production-card";
-import { API_URL, type Production } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { API_URL, api, type Production } from "@/lib/api";
+
+const PAGE = 30;
 
 // Ordem fixa: mais nova primeiro, pelo id (as datas chegam em formatos diferentes do SSE e do REST, e
 // comparar como texto fazia o card que recebia progresso trocar de lugar).
@@ -14,6 +17,8 @@ const byNewest = (list: Production[]) => [...list].sort((a, b) => b.id - a.id);
 export default function ProducoesPage() {
   const [items, setItems] = useState<Production[] | null>(null);
   const [offline, setOffline] = useState(false);
+  const [total, setTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => {
     // O servidor encerra cada conexão SSE a cada ~25 s e o navegador reconecta sozinho.
@@ -26,7 +31,13 @@ export default function ProducoesPage() {
     };
     const es = new EventSource(`${API_URL}/productions/events`);
     es.addEventListener("snapshot", (e) => {
-      setItems(byNewest(JSON.parse((e as MessageEvent).data)));
+      // a 1ª página chega pelo SSE; páginas antigas já carregadas continuam na lista
+      const first: Production[] = JSON.parse((e as MessageEvent).data);
+      setItems((prev) => {
+        const map = new Map((prev ?? []).map((p) => [p.id, p]));
+        first.forEach((p) => map.set(p.id, p));
+        return byNewest([...map.values()]);
+      });
       online();
     });
     es.addEventListener("update", (e) => {
@@ -47,16 +58,33 @@ export default function ProducoesPage() {
     };
   }, []);
 
-  // remove da lista o que foi excluído (o SSE só envia alterações)
+  // total do histórico e remoção do que foi excluído (o SSE só envia alterações): só ids, sem baixar os cards
   useEffect(() => {
+    api.productionsPage(1, 0).then((r) => setTotal(r.total)).catch(() => {});
     const t = setInterval(async () => {
       try {
-        const res = await fetch(`${API_URL}/productions`);
-        if (res.ok) setItems(byNewest(await res.json()));
+        const ids = new Set(await api.productionIds());
+        setTotal(ids.size);
+        setItems((prev) => (prev ? prev.filter((p) => ids.has(p.id)) : prev));
       } catch {}
     }, 15000);
     return () => clearInterval(t);
   }, []);
+
+  async function loadMore() {
+    setLoadingMore(true);
+    try {
+      const page = await api.productionsPage(PAGE, items?.length ?? 0);
+      setTotal(page.total);
+      setItems((prev) => {
+        const map = new Map((prev ?? []).map((p) => [p.id, p]));
+        page.items.forEach((p) => map.set(p.id, p));
+        return byNewest([...map.values()]);
+      });
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   return (
     <div className="w-full">
@@ -87,6 +115,11 @@ export default function ProducoesPage() {
           {items.map((p) => (
             <ProductionCard key={p.id} p={p} />
           ))}
+          {items.length < total && (
+            <Button variant="outline" onClick={loadMore} disabled={loadingMore} className="self-center">
+              {loadingMore ? "Carregando…" : `Mostrar mais (${total - items.length})`}
+            </Button>
+          )}
         </div>
       )}
     </div>

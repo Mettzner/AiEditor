@@ -135,7 +135,7 @@ def test_referencia_com_arquivo_autorizado_entra_no_render(env, video):
 
 def test_download_cc_fica_registrado_como_nao_autorizado(env):
     env["monkeypatch"].setattr(yt, "search_page", lambda q, n=50, lang="en", t=None: ([ytc(1)], None))
-    env["monkeypatch"].setattr(yt, "download_segment", lambda vid, a, b, dest: dest.write_bytes(b"v") or dest)
+    env["monkeypatch"].setattr(yt, "download_segment", lambda vid, a, b, dest, **kw: dest.write_bytes(b"v") or dest)
     entry = sel_mod.Selector(make_ctx()).select_scene(scene(source="youtube"))
     assert entry["source_used"] == "youtube" and "yt-dlp" in entry["obtained_how"]
     assert "não é fluxo autorizado" in entry["obtained_how"]
@@ -144,7 +144,7 @@ def test_download_cc_fica_registrado_como_nao_autorizado(env):
 # ---------------------------------------------------------------- D3: trecho errado não é aprovado
 def test_miniatura_certa_e_trecho_errado_nao_vira_trecho_confirmado(env, tmp_path):
     env["monkeypatch"].setattr(yt, "search_page", lambda q, n=50, lang="en", t=None: ([ytc(i) for i in range(3)], None))
-    env["monkeypatch"].setattr(yt, "download_segment", lambda vid, a, b, dest: dest.write_bytes(b"v") or dest)
+    env["monkeypatch"].setattr(yt, "download_segment", lambda vid, a, b, dest, **kw: dest.write_bytes(b"v") or dest)
     fake = tmp_path / "f.jpg"
     fake.write_bytes(b"jpg")
     env["monkeypatch"].setattr(media_index, "frames_at", lambda path, times, tag="f": [(t, fake) for t in times])
@@ -165,7 +165,7 @@ def test_miniatura_certa_e_trecho_errado_nao_vira_trecho_confirmado(env, tmp_pat
 
 def test_sem_conferencia_possivel_fica_para_revisao(env):
     env["monkeypatch"].setattr(yt, "search_page", lambda q, n=50, lang="en", t=None: ([ytc(1)], None))
-    env["monkeypatch"].setattr(yt, "download_segment", lambda vid, a, b, dest: dest.write_bytes(b"v") or dest)
+    env["monkeypatch"].setattr(yt, "download_segment", lambda vid, a, b, dest, **kw: dest.write_bytes(b"v") or dest)
 
     def boom(*a, **k):
         raise ffmpeg.FFmpegError("sem frames")

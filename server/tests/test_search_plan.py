@@ -88,7 +88,7 @@ def _youtube(env, pages: dict[str | None, tuple[list, str | None]], calls: list)
 def test_youtube_pede_50_mesmo_no_modo_rapido(env):
     calls = []
     _youtube(env, {None: ([ytc(i, "dark country road night") for i in range(10)], None)}, calls)
-    env["monkeypatch"].setattr(yt, "download_segment", lambda vid, a, b, dest: dest.write_bytes(b"v") or dest)
+    env["monkeypatch"].setattr(yt, "download_segment", lambda vid, a, b, dest, **kw: dest.write_bytes(b"v") or dest)
     sel = sel_mod.Selector(make_ctx(mode="fast"))
     assert int(sel.cfg["results_per_query"]) == 10  # o modo rápido mexe só nos bancos
     sel.select_scene(scene(source="youtube"))
@@ -99,7 +99,7 @@ def test_pagina_extra_so_quando_util_e_com_cota(env):
     calls = []
     poor = ([ytc(1, "dark country road", dur=2)], "P2")  # curto demais: nada útil na 1ª página
     _youtube(env, {None: poor, "P2": ([ytc(i, "dark country road night") for i in range(2, 12)], None)}, calls)
-    env["monkeypatch"].setattr(yt, "download_segment", lambda vid, a, b, dest: dest.write_bytes(b"v") or dest)
+    env["monkeypatch"].setattr(yt, "download_segment", lambda vid, a, b, dest, **kw: dest.write_bytes(b"v") or dest)
     sel = sel_mod.Selector(make_ctx())
     exact = {**scene(source="youtube"), "visual_role": "exact_evidence", "context_id": "c"}
     sel.plan_searches([exact])
@@ -123,7 +123,7 @@ def test_cena_de_banco_sem_resultado_tenta_youtube_antes_da_geracao(env):
         p.videos = 0
     calls = []
     _youtube(env, {None: ([ytc(i, "dark country road night fog") for i in range(6)], None)}, calls)
-    env["monkeypatch"].setattr(yt, "download_segment", lambda vid, a, b, dest: dest.write_bytes(b"v") or dest)
+    env["monkeypatch"].setattr(yt, "download_segment", lambda vid, a, b, dest, **kw: dest.write_bytes(b"v") or dest)
     entry = sel_mod.Selector(make_ctx()).select_scene(scene(source="stock"))
     assert calls and entry["source_used"] == "youtube"
 
@@ -131,7 +131,7 @@ def test_cena_de_banco_sem_resultado_tenta_youtube_antes_da_geracao(env):
 def test_cena_exata_compara_fontes_na_mesma_escala(env):
     calls = []
     _youtube(env, {None: ([ytc(i, "dark country road night") for i in range(6)], None)}, calls)
-    env["monkeypatch"].setattr(yt, "download_segment", lambda vid, a, b, dest: dest.write_bytes(b"v") or dest)
+    env["monkeypatch"].setattr(yt, "download_segment", lambda vid, a, b, dest, **kw: dest.write_bytes(b"v") or dest)
 
     def scores(n, prompt, k):  # 1ª fonte (YouTube) nota 7,5; 2ª (bancos) nota 9
         top = 7.5 if k == 1 else 9.0

@@ -37,6 +37,10 @@ def run(ctx: JobContext) -> str:
     if credits:
         ctx.path("output", "creditos.txt").write_text(credits, encoding="utf-8")
     manifest = write_manifest(ctx)
+    if (ctx.settings.get("folders") or {}).get("auto_cleanup"):
+        from ..purge import cleanup_intermediates
+
+        cleanup_intermediates(ctx.production_id)  # vídeo, manifesto e decisões ficam
     report = write_report(ctx)  # atualizado com todos os problemas até o render
     visual = write_visual_report(ctx)
 

@@ -165,7 +165,7 @@ def player_aspect(player: dict) -> float | None:
     return w / h if h > 0 else None
 
 
-def download_segment(video_id: str, start: float, end: float, dest: Path) -> Path:
+def download_segment(video_id: str, start: float, end: float, dest: Path, cancel=None) -> Path:
     """Baixa só o trecho [start, end] em até 1080p, sem áudio (a narração cobre o som)."""
     import yt_dlp
     from yt_dlp.utils import download_range_func
@@ -190,6 +190,14 @@ def download_segment(video_id: str, start: float, end: float, dest: Path) -> Pat
         "quiet": True, "no_warnings": True, "noprogress": True,
         "merge_output_format": "mp4",
     }
+    if cancel is not None:
+        def hook(_status: dict) -> None:  # cancelamento da produção interrompe o yt-dlp no meio
+            if cancel():
+                from yt_dlp.utils import DownloadCancelled
+
+                raise DownloadCancelled("produção cancelada")
+
+        opts["progress_hooks"] = [hook]
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
     produced = sorted(dest.parent.glob(dest.stem + ".*"), key=lambda p: p.stat().st_mtime, reverse=True)
