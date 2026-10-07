@@ -14,3 +14,6 @@ client_secret*.json
 build/
 dist/
 installer/google_oauth_client.json
+
+# resultados do benchmark (python -m app.evaluation --out ...)
+server/eval/results/

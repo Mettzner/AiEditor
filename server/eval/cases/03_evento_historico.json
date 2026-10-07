@@ -1,0 +1,56 @@
+{
+  "id": "evento_historico_chernobyl",
+  "language": "en",
+  "kind": "evento real, evidência exata",
+  "units": [
+    "On April 26, 1986, reactor number four at Chernobyl exploded.",
+    "Within days, Pripyat was evacuated.",
+    "Officials said there was no danger to the public."
+  ],
+  "annotations": {
+    "entities": [{"name": "Chernobyl"}, {"name": "Pripyat"}],
+    "scenes": [
+      {"units": [0], "visual_role": "exact_evidence", "required_identity": "exact_event", "narrative_time": "past"},
+      {"units": [1], "visual_role": "exact_evidence", "required_identity": "exact_place", "entities": ["Pripyat"]},
+      {"units": [2], "must_not_imply": ["danger"]}
+    ],
+    "contradictions": 0,
+    "context_blocks": 1
+  },
+  "replay": {
+    "bible": {
+      "topic": "Chernobyl disaster",
+      "contexts": [{"id": "ctx1", "first_unit": 0, "last_unit": 2, "setting_type": "historical", "era": "1986",
+                    "era_label": "1980s", "place": "Soviet Ukraine", "footage_feasibility": "historical_modern"}],
+      "entities": [
+        {"name": "Chernobyl", "kind": "event", "real_identifiable": true, "evidence_units": [0]},
+        {"name": "Pripyat", "kind": "place", "real_identifiable": true, "evidence_units": [1]}
+      ],
+      "claims": [
+        {"units": [0], "quote": "reactor number four at Chernobyl exploded", "subject": "reactor 4",
+         "relation": "exploded on", "object": "1986-04-26", "modality": "asserted"},
+        {"units": [2], "quote": "no danger to the public", "subject": "officials", "relation": "said",
+         "object": "danger", "modality": "negated"}
+      ]
+    },
+    "plan": [
+      {"first_unit": 0, "last_unit": 0, "subject": "nuclear power plant", "entity_ids": ["Chernobyl"],
+       "visual_role": "exact_evidence", "required_identity": "exact_event",
+       "documentary_query": "Chernobyl 1986 reactor archival footage"},
+      {"first_unit": 1, "last_unit": 1, "subject": "evacuation buses", "entity_ids": ["Pripyat"],
+       "visual_role": "exact_evidence", "required_identity": "exact_place",
+       "documentary_query": "Pripyat evacuation 1986"},
+      {"first_unit": 2, "last_unit": 2, "subject": "soviet officials", "claim_ids": ["clm02"],
+       "visual_role": "contextual_illustration"}
+    ]
+  },
+  "candidates": {
+    "0": [
+      {"title": "nuclear power plant cooling towers drone 4k", "provider": "pexels", "channel": "x", "relevant": false},
+      {"title": "Chernobyl 1986 archival footage reactor", "provider": "youtube", "channel": "archive-doc", "relevant": true},
+      {"title": "Chernobyl documentary 1986 aftermath", "provider": "youtube", "channel": "archive-doc", "relevant": true},
+      {"title": "Chernobyl reactor explained animation", "provider": "youtube", "channel": "edu", "relevant": false,
+       "identity": true}
+    ]
+  }
+}

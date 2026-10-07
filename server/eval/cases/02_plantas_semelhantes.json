@@ -1,0 +1,55 @@
+{
+  "id": "plantas_semelhantes",
+  "language": "pt",
+  "kind": "espécie ambígua",
+  "units": [
+    "O jasmim perfuma os quintais do Nordeste nas noites quentes.",
+    "Mas o jasmim-manga, apesar do nome, é outra planta: a Plumeria rubra.",
+    "Suas flores não servem para chá."
+  ],
+  "annotations": {
+    "entities": [{"name": "jasmim"}, {"name": "jasmim-manga", "scientific_name": "Plumeria rubra"}],
+    "scenes": [
+      {"units": [0], "required_identity": "species", "entities": ["jasmim"]},
+      {"units": [1], "required_identity": "species", "entities": ["jasmim-manga"]},
+      {"units": [2], "must_not_imply": ["tea"]}
+    ],
+    "contradictions": 0,
+    "context_blocks": 1
+  },
+  "replay": {
+    "bible": {
+      "topic": "jasmins",
+      "contexts": [{"id": "ctx1", "first_unit": 0, "last_unit": 2, "setting_type": "contemporary",
+                    "era": "present day", "era_label": "contemporary", "place": "northeastern Brazil",
+                    "footage_feasibility": "contemporary"}],
+      "entities": [
+        {"name": "jasmim", "kind": "plant", "ambiguous_name": true, "evidence_units": [0]},
+        {"name": "jasmim-manga", "kind": "plant", "aliases": ["frangipani"], "scientific_name": "Plumeria rubra",
+         "evidence_units": [1, 2]}
+      ],
+      "claims": [
+        {"units": [2], "quote": "não servem para chá", "subject": "jasmim-manga", "relation": "used for",
+         "object": "tea", "modality": "negated"}
+      ],
+      "ambiguities": [{"units": [0], "question": "Qual jasmim (Jasminum sambac? Jasminum officinale?)",
+                       "importance": "high"}]
+    },
+    "plan": [
+      {"first_unit": 0, "last_unit": 0, "subject": "jasmine flowers", "entity_ids": ["ent01"],
+       "required_identity": "species", "queries": ["jasmine flowers night garden"]},
+      {"first_unit": 1, "last_unit": 1, "subject": "frangipani flowers", "entity_ids": ["frangipani"],
+       "required_identity": "species", "documentary_query": "Plumeria rubra flowers",
+       "queries": ["frangipani flowers tree"]},
+      {"first_unit": 2, "last_unit": 2, "subject": "frangipani flowers", "entity_ids": ["ent02"],
+       "claim_ids": ["clm01"], "queries": ["frangipani flower close up"]}
+    ]
+  },
+  "candidates": {
+    "1": [
+      {"title": "white jasmine flowers garden", "provider": "pexels", "channel": "a", "relevant": false},
+      {"title": "Plumeria rubra frangipani tree blooming", "provider": "youtube", "channel": "flora", "relevant": true},
+      {"title": "tropical pink flowers", "provider": "pixabay", "channel": "b", "relevant": false}
+    ]
+  }
+}

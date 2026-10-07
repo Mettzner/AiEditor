@@ -1,0 +1,38 @@
+{
+  "id": "comparacao_lavoura",
+  "language": "pt",
+  "kind": "comparação declarada entre épocas",
+  "units": [
+    "Em 1850, uma família colhia trigo à mão.",
+    "Hoje, uma colheitadeira faz o mesmo em minutos.",
+    "Da foice à máquina, o campo mudou de ritmo.",
+    "A colheita moderna usa GPS."
+  ],
+  "annotations": {
+    "scenes": [
+      {"units": [0], "narrative_time": "past"},
+      {"units": [1], "narrative_time": "present"},
+      {"units": [2], "visual_role": "comparison"},
+      {"units": [3], "narrative_time": "present"}
+    ],
+    "contradictions": 0,
+    "context_blocks": 2
+  },
+  "replay": {
+    "bible": {
+      "topic": "colheita ontem e hoje",
+      "contexts": [
+        {"id": "ctx1", "first_unit": 0, "last_unit": 0, "setting_type": "historical", "era": "1850",
+         "era_label": "mid-19th century", "place": "rural Brazil", "footage_feasibility": "pre_film"},
+        {"id": "ctx2", "first_unit": 1, "last_unit": 3, "setting_type": "contemporary", "era": "present day",
+         "era_label": "contemporary", "place": "rural Brazil", "footage_feasibility": "contemporary"}
+      ]
+    },
+    "plan": [
+      {"first_unit": 0, "last_unit": 1, "subject": "wheat harvest"},
+      {"first_unit": 2, "last_unit": 2, "subject": "sickle and combine", "visual_role": "comparison",
+       "comparison": true, "context_id": "ctx1", "unresolved": ["comparação 1850 × hoje declarada"]},
+      {"first_unit": 3, "last_unit": 3, "subject": "combine harvester"}
+    ]
+  }
+}

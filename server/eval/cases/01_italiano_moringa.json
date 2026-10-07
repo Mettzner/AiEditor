@@ -1,0 +1,61 @@
+{
+  "id": "italiano_moringa",
+  "language": "it",
+  "kind": "pianta, negazione, pronome",
+  "units": [
+    "La moringa cresce nei villaggi del Kerala da generazioni.",
+    "Le sue foglie non sono velenose, come molti credono.",
+    "Le donne la raccolgono all'alba e la seccano al sole.",
+    "È come oro verde per queste famiglie."
+  ],
+  "annotations": {
+    "entities": [{"name": "moringa", "scientific_name": "Moringa oleifera"}],
+    "scenes": [
+      {"units": [0], "visual_role": "contextual_illustration", "required_identity": "species", "entities": ["moringa"],
+       "narrative_time": "present"},
+      {"units": [1], "must_not_imply": ["poisonous"], "entities": ["moringa"]},
+      {"units": [2], "entities": ["moringa"]},
+      {"units": [3], "visual_role": "metaphor", "required_identity": "generic"}
+    ],
+    "contradictions": 0,
+    "context_blocks": 1
+  },
+  "replay": {
+    "bible": {
+      "topic": "moringa in Kerala",
+      "contexts": [{"id": "ctx1", "first_unit": 0, "last_unit": 3, "setting_type": "contemporary",
+                    "era": "present day", "era_label": "contemporary", "place": "rural Kerala, India",
+                    "footage_feasibility": "contemporary"}],
+      "entities": [
+        {"name": "moringa", "kind": "plant", "aliases": ["drumstick tree", "la pianta"],
+         "scientific_name": "Moringa oleifera", "evidence_units": [0, 1, 2]},
+        {"name": "Kerala", "kind": "place", "real_identifiable": true, "evidence_units": [0]}
+      ],
+      "claims": [
+        {"units": [1], "quote": "non sono velenose", "subject": "moringa", "relation": "is", "object": "poisonous",
+         "modality": "negated"}
+      ]
+    },
+    "plan": [
+      {"first_unit": 0, "last_unit": 0, "subject": "moringa tree", "entity_ids": ["moringa"],
+       "visual_role": "contextual_illustration", "required_identity": "species",
+       "evidence_quote": "La moringa cresce", "documentary_query": "Moringa oleifera Kerala village",
+       "queries": ["moringa tree village", "moringa leaves", "moringa tree"]},
+      {"first_unit": 1, "last_unit": 1, "subject": "moringa leaves", "entity_ids": ["la pianta"],
+       "claim_ids": ["clm01"], "visual_role": "contextual_illustration", "required_identity": "species",
+       "queries": ["moringa leaves close up", "moringa leaves hand", "green leaves"]},
+      {"first_unit": 2, "last_unit": 2, "subject": "women harvesting leaves", "entity_ids": ["moringa"],
+       "visual_role": "contextual_illustration", "queries": ["women harvesting leaves dawn"]},
+      {"first_unit": 3, "last_unit": 3, "literal": false, "subject": "family smiling", "visual_role": "exact_evidence",
+       "required_identity": "exact_object", "queries": ["indian family smiling home"]}
+    ]
+  },
+  "candidates": {
+    "0": [
+      {"title": "Moringa oleifera tree in Kerala village", "provider": "youtube", "channel": "agri-in", "relevant": true},
+      {"title": "beautiful green tree sunset 4k", "provider": "pexels", "channel": "ana", "relevant": false},
+      {"title": "moringa farm harvest india", "provider": "youtube", "channel": "agri-in", "relevant": true},
+      {"title": "drumstick tree leaves close up", "provider": "pixabay", "channel": "joe", "relevant": true}
+    ]
+  }
+}

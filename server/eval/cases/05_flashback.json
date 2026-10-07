@@ -1,0 +1,42 @@
+{
+  "id": "flashback_katrina",
+  "language": "en",
+  "kind": "flashback, passado recente",
+  "units": [
+    "Today, James runs a small bakery in New Orleans.",
+    "In 2005, he watched the water rise through his window.",
+    "The city went silent for weeks.",
+    "Now his bread feeds the same street."
+  ],
+  "annotations": {
+    "entities": [{"name": "James"}],
+    "scenes": [
+      {"units": [0], "narrative_time": "present", "entities": ["James"]},
+      {"units": [1], "narrative_time": "past"},
+      {"units": [2], "narrative_time": "past"},
+      {"units": [3], "narrative_time": "present"}
+    ],
+    "contradictions": 0,
+    "context_blocks": 3
+  },
+  "replay": {
+    "bible": {
+      "topic": "a baker after Katrina",
+      "contexts": [
+        {"id": "ctx1", "first_unit": 0, "last_unit": 0, "setting_type": "contemporary", "era": "present day",
+         "era_label": "contemporary", "place": "New Orleans", "footage_feasibility": "contemporary"},
+        {"id": "ctx2", "first_unit": 1, "last_unit": 2, "setting_type": "historical", "era": "2005",
+         "era_label": "mid-2000s", "place": "New Orleans", "footage_feasibility": "contemporary",
+         "card_text": "New Orleans, 2005"},
+        {"id": "ctx3", "first_unit": 3, "last_unit": 3, "setting_type": "contemporary", "era": "present day",
+         "era_label": "contemporary", "place": "New Orleans", "footage_feasibility": "contemporary"}
+      ],
+      "entities": [{"name": "James", "kind": "person", "aliases": ["he", "his"], "evidence_units": [0, 1, 3]}]
+    },
+    "plan": [
+      {"first_unit": 0, "last_unit": 1, "subject": "baker", "entity_ids": ["James"]},
+      {"first_unit": 2, "last_unit": 2, "subject": "flooded street"},
+      {"first_unit": 3, "last_unit": 3, "subject": "bread", "entity_ids": ["he"]}
+    ]
+  }
+}

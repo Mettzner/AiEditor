@@ -1,0 +1,20 @@
+{
+  "id": "documentario_longo",
+  "language": "en",
+  "kind": "roteiro longo, várias janelas e épocas",
+  "generate": {
+    "units": 300,
+    "units_per_block": 100,
+    "units_per_scene": 3,
+    "unit_template": "Sentence {i} of the long documentary about farming."
+  },
+  "annotations": {
+    "scenes": [
+      {"units": [0], "narrative_time": "past"},
+      {"units": [150], "narrative_time": "past"},
+      {"units": [299], "narrative_time": "past"}
+    ],
+    "contradictions": 0,
+    "context_blocks": 3
+  }
+}

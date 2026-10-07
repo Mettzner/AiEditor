@@ -1,0 +1,50 @@
+{
+  "id": "pessoa_real_curie",
+  "language": "pt",
+  "kind": "pessoa real, reconstituição",
+  "units": [
+    "Marie Curie trabalhava num galpão frio em Paris.",
+    "Ela mexia o minério por horas, até o fim do dia.",
+    "Em 1903, recebeu o Nobel de Física."
+  ],
+  "annotations": {
+    "entities": [{"name": "Marie Curie"}],
+    "scenes": [
+      {"units": [0], "visual_role": "reconstruction", "entities": ["Marie Curie"], "narrative_time": "past"},
+      {"units": [1], "entities": ["Marie Curie"]},
+      {"units": [2], "visual_role": "exact_evidence", "required_identity": "exact_person"}
+    ],
+    "contradictions": 0,
+    "context_blocks": 1
+  },
+  "replay": {
+    "bible": {
+      "topic": "Marie Curie",
+      "contexts": [{"id": "ctx1", "first_unit": 0, "last_unit": 2, "setting_type": "historical", "era": "1900",
+                    "era_label": "turn of the 20th century", "place": "Paris", "footage_feasibility": "early_film"}],
+      "entities": [
+        {"name": "Marie Curie", "kind": "person", "real_identifiable": true, "aliases": ["ela", "Curie"],
+         "inferred_attributes": ["dark dress"], "evidence_units": [0, 1, 2]}
+      ],
+      "claims": [{"units": [2], "quote": "Em 1903, recebeu o Nobel de Física", "subject": "Marie Curie",
+                  "relation": "received", "object": "Nobel Prize in Physics 1903"}],
+      "recurring_entities": [{"name": "Marie Curie", "look": "woman in her thirties, dark dress", "contexts": ["ctx1"]}]
+    },
+    "plan": [
+      {"first_unit": 0, "last_unit": 0, "subject": "woman scientist shed", "entity_ids": ["Marie Curie"],
+       "visual_role": "reconstruction", "required_identity": "generic"},
+      {"first_unit": 1, "last_unit": 1, "subject": "woman stirring", "entity_ids": ["ela"],
+       "visual_role": "reconstruction"},
+      {"first_unit": 2, "last_unit": 2, "subject": "Marie Curie portrait", "entity_ids": ["ent01"],
+       "visual_role": "exact_evidence", "required_identity": "exact_person",
+       "documentary_query": "Marie Curie 1903 photograph"}
+    ]
+  },
+  "candidates": {
+    "2": [
+      {"title": "woman scientist laboratory vintage", "provider": "pexels", "channel": "a", "relevant": false},
+      {"title": "Marie Curie original photograph 1903", "provider": "youtube", "channel": "hist", "relevant": true},
+      {"title": "Curie Nobel prize archive", "provider": "youtube", "channel": "hist2", "relevant": true}
+    ]
+  }
+}
