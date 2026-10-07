@@ -109,6 +109,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "min_score": 6.5,
         # sem a IA de visão, nota de texto mínima para aceitar sem tentar a próxima fonte (0–10)
         "text_min_score": 3.0,
+        # strict_for_exact_identity: cena de pessoa/evento/espécie exata sem confirmação fica "revisar";
+        # lenient: material ilustrativo segue com aviso (pipeline/validation.py)
+        "validation_policy": "strict_for_exact_identity",
         "gemini_model": "gemini-3.8-flash",
         "parallel_scenes": 4,
         "parallel_downloads": 4,

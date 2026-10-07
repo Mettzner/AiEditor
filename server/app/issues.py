@@ -14,6 +14,7 @@ CATALOG: dict[str, tuple[str, str]] = {
     "VISION_FALLBACK": ("info", "Gemini sem cota; avaliações de imagem feitas pelo Claude"),
     "AI_IMAGE_REJECTED": ("warning", "Imagem gerada reprovou 2x na validação"),
     "QUERY_REWRITTEN": ("info", "Queries reescritas após reprovação"),
+    "SCENE_REVIEW_REQUIRED": ("warning", "Cena precisa de revisão (identidade exata ou evidência sem confirmação)"),
     "SCENE_GENERIC_FALLBACK": ("warning", "Usada uma foto genérica do assunto por falta de opção"),
     "LANGUAGE_MISMATCH": ("warning", "Idioma escolhido para o vídeo diverge do idioma detectado no roteiro"),
     "OVERLAY_LANGUAGE_FIXED": ("info", "Texto de overlay estava em outro idioma e foi corrigido"),

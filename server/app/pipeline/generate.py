@@ -19,6 +19,7 @@ from ..providers.darkvi.client import DarkviError
 from ..worker.context import JobContext
 from .context import video_look
 from .imagegen import generate_validated
+from .validation import classify, policy
 
 _ref_lock = threading.Lock()
 
@@ -75,7 +76,8 @@ def generate_scenes(ctx: JobContext, sel, scenes: list[dict],
         except NoCandidate as e:
             ctx.issue("AI_GEN_FAILED", "IA e bancos falharam; a cena vai repetir a anterior", scene=scene["id"],
                       detail=f"{reason} | {e}")
-            return {"source": "missing", "reason": reason}
+            return {"source": "missing", "reason": reason,
+                    "validation": {"status": "rejected", "score_basis": "none", "reasons": [reason]}}
 
     def work(scene: dict) -> dict:
         if quota_hit.is_set():
@@ -123,6 +125,11 @@ def generate_scenes(ctx: JobContext, sel, scenes: list[dict],
         for fut in as_completed(futures):
             scene = futures[fut]
             entry = fut.result()
+            if "validation" not in entry:  # imagem gerada: validada só se uma IA de visão a aprovou
+                entry["validation"] = classify(entry, scene, float(sel.cfg["min_score"]), policy(ctx.settings))
+                if entry["validation"]["status"] == "review_required":
+                    ctx.issue("SCENE_REVIEW_REQUIRED", "Cena precisa de revisão: " + "; ".join(
+                        entry["validation"]["reasons"]), scene=scene["id"])
             results[scene["id"]] = entry
             if on_done:
                 on_done(scene, entry)

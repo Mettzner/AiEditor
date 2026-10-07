@@ -43,8 +43,9 @@ def build_report(job: Path, production: dict, config, issues: list[dict]) -> dic
                                      "realism", "strategy", "era_consistent", "anachronisms_seen", "is_timeless",
                                      "queries_used", "must_avoid_used", "attempts",
                                      "reason", "vision_calls", "searches", "in_point", "out_point", "clip_duration",
-                                     "resolution", "author", "license", "page_url", "prompt")
+                                     "resolution", "author", "license", "page_url", "prompt", "segment_check")
                  if sel.get(k) is not None}
+        asset["validation"] = scene_validation(sel, s, config_min_score(job))
         scenes.append({
             "id": s["id"],
             "tempo": f"{s['start']:.2f}–{s['end']:.2f}",
@@ -130,6 +131,22 @@ def build_report(job: Path, production: dict, config, issues: list[dict]) -> dic
     }
 
 
+def config_min_score(job: Path) -> float:
+    from ..config import load_settings
+
+    return float(load_settings()["selection"].get("min_score", 6.5))
+
+
+def scene_validation(entry: dict, scene: dict, min_score: float) -> dict:
+    """Estado salvo na seleção; produções antigas (sem o campo) são classificadas na hora, com a mesma regra."""
+    from ..config import load_settings
+    from .validation import classify, policy
+
+    if entry.get("validation"):
+        return entry["validation"]
+    return classify(entry, scene, min_score, policy(load_settings()))
+
+
 def _scene_context_summary(s: dict) -> dict | None:
     c = s.get("context") or {}
     if not c:
@@ -187,8 +204,9 @@ def build_visual_report(job: Path) -> list[dict]:
             "era_consistent": e.get("era_consistent"),
             "anacronismos_vistos": e.get("anachronisms_seen") or None,
             "estrategia": _strategy(s, e),
-            "revisar": score is None or (isinstance(score, (int, float)) and score < 7)
-            or e.get("era_consistent") is False or bool(e.get("anachronisms_seen")),
+            "validacao": (v := scene_validation(e, s, config_min_score(job)))["status"],
+            "revisar": v["status"] != "validated" or e.get("era_consistent") is False
+            or bool(e.get("anachronisms_seen")),
         })
     return rows
 

@@ -46,6 +46,8 @@ from ..context import HISTORICAL, STRATEGY_LABEL, is_historical, scene_anachroni
 from ...budget import VisionBudget
 from ..plan import load_bible
 from ..timing import Timings
+from ..validation import REVIEW_REQUIRED, classify, comparable_score
+from ..validation import policy as validation_policy
 from ..visual import (REWRITE_SYSTEM, QueryRewriteBatch, compact_json, image_type_for, sanitize_queries, scene_style,
                       style_of_realism, video_type_for)
 from .funnel import Choice, SceneContext, choose, observed_descriptions
@@ -136,6 +138,7 @@ class Selector:
         # teto de gasto: o Claude só avalia clipes enquanto a produção couber no orçamento (app/budget.py)
         self.budget = VisionBudget(ctx.production_id)
         self.budget_reported = False
+        self.validation_policy = validation_policy(ctx.settings)
         self.totals: dict = {"searches": 0, "vision_calls": 0, "vision_failed": 0, "vision_cost": 0.0, "cache_hit": 0,
                              "cache_miss": 0, "cache_empty": 0, "cache_error": 0, "quota_blocked": 0}
 
@@ -526,7 +529,9 @@ class Selector:
     # ---- fase B: resolver repetições e continuidade (local) ------------------------------------
     def resolve(self, decisions: list[Decision]) -> None:
         claimed: dict[str, str] = {k: "já usado" for k in self.used}
-        for d in sorted((d for d in decisions if d.options), key=lambda d: d.options[0].score, reverse=True):
+        # nota visual antes de nota de texto: as escalas não se comparam
+        for d in sorted((d for d in decisions if d.options),
+                        key=lambda d: comparable_score(d.options[0].method, d.options[0].score), reverse=True):
             d.pick = next((i for i, o in enumerate(d.options) if o.candidate.key not in claimed), len(d.options))
             if d.best:
                 claimed[d.best.candidate.key] = d.scene["id"]
@@ -629,6 +634,10 @@ class Selector:
                      context_id=scene.get("context_id"),
                      style_allowance=allowance, allowed_styles=allowed, style_reason=scene.get("style_reason"),
                      continuity=stats.get("continuity"))
+        entry["validation"] = classify(entry, scene, float(self.cfg["min_score"]), self.validation_policy)
+        if entry["validation"]["status"] == REVIEW_REQUIRED:
+            self.ctx.issue("SCENE_REVIEW_REQUIRED", "Cena precisa de revisão: " + "; ".join(
+                entry["validation"]["reasons"]), scene=scene["id"])
         expected = self.youtube_first and {d.planned, entry["source_used"]} <= {"youtube", "stock"}
         if entry["source_used"] != d.planned and not expected:  # YouTube primeiro: cair nos bancos é o esperado
             self.ctx.issue("SCENE_MIGRATED", f"Cena planejada para {SOURCE_LABEL[d.planned]} usou "
@@ -808,7 +817,8 @@ def run(ctx: JobContext) -> str:
                     ctx.issue("SCENE_MIGRATED", "Nenhum clipe nem foto serviu; a cena vai para geração por IA",
                               scene=d.scene["id"], detail=str(e))
                 else:
-                    entry = {"source": "missing", "reason": str(e)}
+                    entry = {"source": "missing", "reason": str(e), "validation": {
+                        "status": "rejected", "score_basis": "none", "reasons": [str(e)]}}
                     ctx.issue("SCENE_LOW_SCORE", "Nenhum asset adequado encontrado; a cena vai estender a anterior",
                               scene=d.scene["id"], detail=str(e))
             with sel.lock:

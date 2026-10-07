@@ -1,6 +1,7 @@
 """Critérios de aceite de MELHORIA_SELECAO_DE_CENAS.md (§7), com provedores e IA simulados."""
 from __future__ import annotations
 
+import json
 import threading
 from datetime import datetime, timedelta
 
@@ -332,3 +333,55 @@ def test_download_tenta_proximo_colocado_antes_de_trocar_de_fonte(env):
     env["monkeypatch"].setattr(yt, "download_segment", segment)
     entry = sel_mod.Selector(make_ctx()).select_scene(scene(source="youtube"))
     assert entry["source_used"] == "youtube" and len(tried) == 2 and entry["external_id"] == tried[1]
+
+
+# ---------------------------------------------------------------- estados de validação (Fase A5)
+def test_sem_visao_fica_nao_validado(env):
+    env["monkeypatch"].setattr(gemini, "available", lambda: False)
+    ctx = make_ctx()
+    entry = sel_mod.Selector(ctx).select_scene(scene())
+    assert entry["method"] == "text"
+    assert entry["validation"]["status"] == "unvalidated" and entry["validation"]["score_basis"] == "text"
+
+
+def test_visao_aprovada_valida_cena_ilustrativa(env):
+    entry = sel_mod.Selector(make_ctx()).select_scene(scene())
+    assert entry["validation"]["status"] == "validated"
+
+
+def test_miniatura_aprovada_nao_confirma_trecho_de_identidade_exata(env):
+    ctx = make_ctx()
+    exact = {**scene(), "visual_role": "exact_evidence", "required_identity": "exact_event"}
+    entry = sel_mod.Selector(ctx).select_scene(exact)
+    assert entry["method"] == "vision" and entry["validation"]["status"] == "review_required"
+    assert any("trecho" in r for r in entry["validation"]["reasons"])
+    assert "SCENE_REVIEW_REQUIRED" in issues(ctx)
+
+
+def test_classificacao_de_imagem_gerada_e_politica_branda():
+    from app.pipeline.validation import classify
+
+    ai = {"source": "ai_image", "source_used": "ai_image", "asset": "assets/s1.png", "method": "ai_image",
+          "score": 9.0, "is_image": True}
+    assert classify(ai, {}, 6.5)["status"] == "validated"
+    assert classify({**ai, "score": None}, {}, 6.5)["status"] == "unvalidated"
+    evidence = {"visual_role": "exact_evidence"}
+    assert classify(ai, evidence, 6.5)["status"] == "review_required"  # gerada nunca é registro real
+    low = {"source": "stock", "source_used": "stock", "asset": "a.mp4", "method": "vision", "score": 4.0}
+    assert classify(low, {}, 6.5)["status"] == "review_required"
+    assert classify(low, {}, 6.5, "lenient")["status"] == "unvalidated"
+    species = {"source": "stock", "source_used": "stock_photo", "asset": "a.jpg", "method": "vision", "score": 9,
+               "is_image": True}
+    assert classify(species, {"required_identity": "species"}, 6.5)["status"] == "review_required"
+    assert classify({"source": "missing", "reason": "nada"}, {}, 6.5)["status"] == "rejected"
+
+
+def test_relatorio_classifica_selecao_antiga_sem_campo(tmp_path):
+    from app.pipeline.report import build_visual_report
+
+    (tmp_path / "plan.json").write_text(json.dumps({"scenes": [{"id": "s001", "text": "x", "start": 0, "end": 5,
+                                                                "source": "stock"}]}), encoding="utf-8")
+    (tmp_path / "selection.json").write_text(json.dumps({"s001": {"source": "stock", "asset": "assets/s001.mp4",
+                                                                  "method": "text", "score": 4.2}}), encoding="utf-8")
+    row = build_visual_report(tmp_path)[0]
+    assert row["validacao"] == "unvalidated" and row["revisar"]
