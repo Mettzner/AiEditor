@@ -27,6 +27,16 @@ class LLMUsage:
         return {k: (round(v, 6) if isinstance(v, float) else v) for k, v in asdict(self).items()}
 
 
+class BatchPending(Exception):
+    """O pedido está num lote da Batch API ainda sem resultado. A etapa para sem ocupar o worker e a produção é
+    retomada em `retry_at` (o lote fica registrado em batch_job e não é reenviado)."""
+
+    def __init__(self, message: str, retry_at=None, batch_id: str = ""):
+        super().__init__(message)
+        self.retry_at = retry_at
+        self.batch_id = batch_id
+
+
 class LLMProvider(Protocol):
     id: str
 
@@ -36,6 +46,17 @@ class LLMProvider(Protocol):
                    cache_ttl: str = "5m", images: list[bytes] | None = None) -> tuple[T, LLMUsage]: ...
 
     def test(self) -> dict: ...
+
+
+_local = __import__("threading").local()
+
+
+def set_current_production(production_id: int | None) -> None:
+    _local.production_id = production_id
+
+
+def current_production() -> int | None:
+    return getattr(_local, "production_id", None)
 
 
 def get_llm(task: str) -> tuple[LLMProvider, dict]:

@@ -31,6 +31,7 @@ from pathlib import Path
 
 from sqlmodel import select
 
+from ...artifacts import scene_fingerprint
 from ...config import get_secret, load_settings
 from ...db import session_scope
 from ...models import AuthorizedMedia, UsedAsset, now
@@ -74,10 +75,10 @@ OBTAINED_HOW = {
     "youtube": "yt-dlp (download fora dos recursos do YouTube; modo escolhido na Configuração, não é fluxo "
                "autorizado pela plataforma)",
 }
-SOURCE_LABEL = {"youtube": "YouTube", "stock": "bancos de vídeo", "stock_photo": "fotos de banco",
+SOURCE_LABEL = {"catalog": "catálogo de mídia autorizada", "youtube": "YouTube", "stock": "bancos de vídeo", "stock_photo": "fotos de banco",
                 "ai_image": "imagem gerada", "archive": "acervos históricos", "timeless": "planos atemporais"}
 # etapa da cadeia → estratégia de época registrada no relatório visual (§10.7)
-STEP_STRATEGY = {"stock": "reconstituição", "archive": "arquivo", "timeless": "atemporal", "ai_image": "IA",
+STEP_STRATEGY = {"catalog": "arquivo autorizado", "stock": "reconstituição", "archive": "arquivo", "timeless": "atemporal", "ai_image": "IA",
                  "stock_photo": "foto de banco"}
 STYLE_REJECT_REASONS = ("estilo", "franquia", "interface/marca")
 CONTINUITY_BONUS = 0.5
@@ -141,6 +142,15 @@ class Selector:
         self.lock = threading.Lock()
         self.selection: dict[str, dict] = (ctx.read_json("selection.json")
                                            if (ctx.dir / "selection.json").exists() else {})
+        self.scene_fp: dict[str, str] = {}
+        if (ctx.dir / "plan.json").exists():
+            self.scene_fp = {s["id"]: scene_fingerprint(s) for s in ctx.read_json("plan.json")["scenes"]}
+            # cena que mudou no plano perde só a própria escolha (o resto da seleção é aproveitado)
+            stale = [sid for sid, e in self.selection.items()
+                     if sid not in self.scene_fp or (e.get("scene_fp") and e["scene_fp"] != self.scene_fp[sid])]
+            for sid in stale:
+                self.selection.pop(sid, None)
+            self.invalidated_scenes = stale
         self.used = {f"{v['provider']}:{v['external_id']}" for v in self.selection.values() if v.get("external_id")}
         self.youtube_on = bool(ctx.settings["youtube"].get("enabled", True) and get_secret("youtube"))
         self.brief: dict = load_bible(ctx.dir)  # Bíblia de Contexto (superconjunto do antigo brief)
@@ -172,6 +182,8 @@ class Selector:
         self.youtube_ingest = yt_cfg.get("ingest_mode", "reference")
         self.references_per_scene = int(yt_cfg.get("references_per_scene", 5))
         self.references: dict[str, list[dict]] = {}
+        with session_scope() as s:
+            self.catalog_on = s.exec(select(AuthorizedMedia.id)).first() is not None
         # uso por segmento: (asset, início, fim), repetição limitada por vídeo e por canal
         self.segments = SegmentLedger.from_cfg(self.cfg)
         for v in self.selection.values():
@@ -206,6 +218,9 @@ class Selector:
 
     def save(self) -> None:
         with self.lock:
+            for sid, e in self.selection.items():
+                if sid in self.scene_fp and not e.get("scene_fp") and not e.get("pinned"):
+                    e["scene_fp"] = self.scene_fp[sid]
             self.ctx.write_json("selection.json", self.selection)
 
     def _quota_fallback(self, scene: dict) -> None:
@@ -312,6 +327,8 @@ class Selector:
                 self._record_references(scene, found, queries)
                 return self._authorized_candidates(found)
             return found
+        if source == "catalog":
+            return self._catalog_candidates(scene)
         if source == "archive":
             feas = (scene.get("context") or {}).get("footage_feasibility")
             out, errors = [], []
@@ -361,6 +378,44 @@ class Selector:
         with self.lock:
             known = {r["youtube_id"] for r in self.references.get(scene["id"], [])}
             self.references.setdefault(scene["id"], []).extend(r for r in refs if r["youtube_id"] not in known)
+
+    def _catalog_candidates(self, scene: dict) -> list:
+        """Mídia autorizada já no computador que combina com a cena (nome do arquivo, autor, nota de direitos ou o
+        que uma IA já viu nela): entra na avaliação sem nenhuma busca externa."""
+        from ..semantics import norm
+
+        terms = identity_terms(scene, self.brief)
+        words = {w for w in norm(scene.get("subject") or "").split() if len(w) > 3}
+        with session_scope() as s:
+            media = list(s.exec(select(AuthorizedMedia)))
+        out = []
+        for m in media:
+            text_ = norm(" ".join([m.original_name, m.author, m.rights_note, m.source_url or ""]))
+            hit = any(t in text_ for t in terms) or (words and len(words & set(text_.split())) >= min(2, len(words)))
+            if not hit:
+                continue
+            ref = Candidate(provider="youtube", external_id=m.youtube_id or "", title=m.original_name, duration=0,
+                            width=0, height=0, page_url=m.source_url or "", thumbnail=None, author=m.author)
+            for c in self._authorized_candidates([ref]) if m.youtube_id else self._local_candidates([m]):
+                out.append(c)
+        return out
+
+    def _local_candidates(self, media: list) -> list:
+        out = []
+        for m in media:
+            try:
+                index = media_index.index_file(Path(m.local_path))
+            except Exception as e:  # noqa: BLE001
+                log.warning("arquivo autorizado %s indisponível: %s", m.local_path, e)
+                continue
+            segs = index["segments"]
+            picked = segs[:: max(1, len(segs) // 6)][:6]
+            out.append(Candidate(
+                provider="authorized_local", external_id=str(m.id), title=m.original_name, duration=index["duration"],
+                width=index["width"], height=index["height"], page_url=m.source_url or "", thumbnail=None,
+                author=m.author, license=m.license, preview_frames=[p["frame"] for p in picked],
+                frame_positions=[p["frame_t"] / index["duration"] for p in picked]))
+        return out
 
     def _authorized_candidates(self, found: list) -> list:
         """Vídeos achados no YouTube que têm arquivo autorizado associado: entram como candidatos locais, com
@@ -555,6 +610,10 @@ class Selector:
 
     # ---- fase A: decidir sem baixar -------------------------------------------------------------
     def _chain(self, planned: str, allow_ai: bool, scene: dict | None = None) -> list[str]:
+        head = ["catalog"] if self.catalog_on else []  # catálogo local antes de qualquer API ou geração
+        return head + [s for s in self._chain_apis(planned, allow_ai, scene) if s != "catalog"]
+
+    def _chain_apis(self, planned: str, allow_ai: bool, scene: dict | None = None) -> list[str]:
         feas = ((scene or {}).get("context") or {}).get("footage_feasibility")
         if feas in HISTORICAL:
             return self._period_chain(planned, allow_ai, scene or {}, feas)
@@ -612,13 +671,15 @@ class Selector:
             elif source == "archive":
                 if not self.archives_on:
                     continue
+            elif source == "catalog":
+                pass
             elif not self.providers:
                 continue
             try:
                 choice = self._try_source(source, scene, previous, stats, d.queries, d.must_avoid)
                 # reescrever só faz sentido para as buscas do assunto (acervos e atemporal têm queries próprias)
                 if (vision and choice and choice.method.startswith("vision") and choice.score < rewrite_below
-                        and not rewritten and source in ("youtube", "stock", "stock_photo")):
+                        and not rewritten and source in ("youtube", "stock", "stock_photo")):  # catálogo: sem busca
                     rewritten = True
                     seen = [choice.reason] + choice.rejected_seen
                     if rewrite == "defer":  # a etapa junta todas as cenas numa chamada só
@@ -897,7 +958,7 @@ class Selector:
                 dest = self.ctx.path("assets", f"{sid}.mp4")
                 youtube.download_segment(c.external_id, in_point, in_point + dur + 0.5, dest)
                 asset_in, resolution = 0.0, [c.width, c.height]
-            elif c.provider == "authorized_youtube":
+            elif c.provider in ("authorized_youtube", "authorized_local"):
                 with session_scope() as s:
                     media = s.get(AuthorizedMedia, int(c.external_id))
                 if media is None:

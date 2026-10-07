@@ -105,6 +105,7 @@ export interface ProductionIssue {
 export type ProductionStatus =
   | "preparing"
   | "queued"
+  | "waiting_provider"
   | "running"
   | "done"
   | "failed"

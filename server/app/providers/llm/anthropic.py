@@ -27,8 +27,9 @@ from .base import LLMUsage
 
 T = TypeVar("T", bound=BaseModel)
 log = logging.getLogger("aieditor.llm")
-PROMPT_VERSION = "v2"  # mude ao alterar prompts: invalida o cache local de respostas
-BATCH_POLL_SECONDS = 30
+PROMPT_VERSION = "v3"  # mude ao alterar prompts: invalida o cache local de respostas
+BATCH_POLL_SECONDS = 60
+BATCH_DEADLINE_HOURS = 24  # depois disso o lote é cancelado e a chamada segue sem desconto
 
 
 def price_info(model: str) -> tuple[tuple[float, float, float, float], bool]:
@@ -89,6 +90,32 @@ def _cache_key(task: str, model: str, system: str, context: str | list[str] | No
                       [hashlib.sha256(i).hexdigest() for i in images or []]],
                      ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _current_production() -> int | None:
+    from .base import current_production
+
+    return current_production()
+
+
+class _Usage:
+    def __init__(self, d: dict):
+        self.input_tokens = d.get("input_tokens", 0)
+        self.output_tokens = d.get("output_tokens", 0)
+        self.cache_creation_input_tokens = d.get("cache_creation_input_tokens", 0)
+        self.cache_read_input_tokens = d.get("cache_read_input_tokens", 0)
+
+
+class _Msg:
+    """Resposta reconstruída do lote salvo (para calcular o uso sem nova chamada)."""
+
+    def __init__(self, usage: dict):
+        self.usage = _Usage(usage)
+        self.model = usage.get("model")
+
+
+def _rebuild(job, schema):
+    return schema.model_validate(job.result), _Msg(job.usage or {})
 
 
 class LLMCallFailed(ProviderError):
@@ -190,7 +217,12 @@ class AnthropicLLM:
         t = time.perf_counter()
         try:
             if batch:
-                parsed, resp = self._run_batch(params, schema, task)
+                done = self._batch_step(key, params, schema, task)
+                if done is None:  # lote expirou/cancelado: segue pela chamada normal (sem desconto)
+                    batch = False
+                    parsed, resp = self._run(params, schema)
+                else:
+                    parsed, resp = done
             else:
                 parsed, resp = self._run(params, schema)
         except LLMCallFailed as e:
@@ -219,24 +251,82 @@ class AnthropicLLM:
             resp = client.messages.create(**body)
         return _parse_message(resp, schema), resp
 
-    # ---------------------------------------------------------------- Batch API (modo econômico)
-    def _run_batch(self, params: dict, schema: type[T], task: str):
-        """Envia 1 pedido pela Message Batches API (50% mais barata, assíncrona) e espera o resultado."""
+    # ---------------------------------------------------------------- Batch API (modo econômico, persistente)
+    def _batch_step(self, key: str, params: dict, schema: type[T], task: str):
+        """Um passo do lote, sem esperar: (parsed, resposta) se pronto; BatchPending se ainda processando; None se
+        o lote expirou ou foi cancelado (quem chamou faz a chamada normal). Reiniciar o worker reaproveita o lote
+        registrado em batch_job pelo hash da requisição: nunca reenvia nem cobra em dobro."""
+        from datetime import timedelta
+
+        from ...db import session_scope
+        from ...models import BatchJob, now
+        from .base import BatchPending
+
         client = self._client()
-        body = _with_format(params, schema)
-        batch = client.messages.batches.create(requests=[{"custom_id": task or "req", "params": body}])
-        log.info("lote %s enviado (%s)", batch.id, task)
-        while True:
-            batch = client.messages.batches.retrieve(batch.id)
-            if batch.processing_status == "ended":
-                break
-            time.sleep(BATCH_POLL_SECONDS)
-        for item in client.messages.batches.results(batch.id):
-            if item.result.type != "succeeded":
-                raise ProviderError(f"Lote {batch.id}: {item.result.type}")
-            msg = item.result.message
-            return _parse_message(msg, schema), msg
-        raise ProviderError(f"Lote {batch.id} sem resultado")
+        with session_scope() as s:
+            job = s.exec(select(BatchJob).where(BatchJob.request_hash == key)).first()
+            if job is None:
+                body = _with_format(params, schema)
+                custom_id = f"{task or 'req'}-{key[:16]}"
+                batch = client.messages.batches.create(requests=[{"custom_id": custom_id, "params": body}])
+                job = BatchJob(production_id=_current_production(), task=task, request_hash=key, batch_id=batch.id,
+                               custom_id=custom_id, deadline_at=now() + timedelta(hours=BATCH_DEADLINE_HOURS),
+                               next_poll_at=now() + timedelta(seconds=BATCH_POLL_SECONDS))
+                s.add(job)
+                s.commit()
+                log.info("lote %s enviado (%s); produção aguarda o provedor", batch.id, task)
+                raise BatchPending(f"lote {batch.id} enviado", job.next_poll_at, batch.id)
+            if job.status in ("cancelled", "expired", "failed"):
+                return None
+            if job.status == "ended" and job.result is not None:
+                return _rebuild(job, schema)
+            batch = client.messages.batches.retrieve(job.batch_id)
+            job.polls += 1
+            job.updated_at = now()
+            if batch.processing_status != "ended":
+                deadline = job.deadline_at if job.deadline_at is None or job.deadline_at.tzinfo else \
+                    job.deadline_at.replace(tzinfo=now().tzinfo)
+                if deadline and now() > deadline:
+                    try:
+                        client.messages.batches.cancel(job.batch_id)
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("cancelar lote %s falhou: %s", job.batch_id, e)
+                    job.status = "expired"
+                    s.add(job)
+                    s.commit()
+                    return None
+                job.next_poll_at = now() + timedelta(seconds=min(600, BATCH_POLL_SECONDS * (1 + job.polls)))
+                s.add(job)
+                s.commit()
+                raise BatchPending(f"lote {job.batch_id} em processamento", job.next_poll_at, job.batch_id)
+            for item in client.messages.batches.results(job.batch_id):
+                if item.custom_id != job.custom_id:
+                    continue
+                if item.result.type != "succeeded":
+                    job.status, job.error = "failed", item.result.type
+                    s.add(job)
+                    s.commit()
+                    return None
+                msg = item.result.message
+                try:
+                    parsed = _parse_message(msg, schema)
+                except LLMCallFailed as e:  # cobrado, mas inútil: fica "failed" (a retomada não cobra de novo)
+                    job.status, job.error = "failed", str(e)[:300]
+                    s.add(job)
+                    s.commit()
+                    raise
+                job.status, job.result = "ended", parsed.model_dump()
+                job.usage = {"input_tokens": msg.usage.input_tokens or 0, "output_tokens": msg.usage.output_tokens or 0,
+                             "cache_creation_input_tokens": getattr(msg.usage, "cache_creation_input_tokens", 0) or 0,
+                             "cache_read_input_tokens": getattr(msg.usage, "cache_read_input_tokens", 0) or 0,
+                             "model": getattr(msg, "model", None) or params["model"]}
+                s.add(job)
+                s.commit()
+                return parsed, msg
+            job.status, job.error = "failed", "sem resultado para o custom_id"
+            s.add(job)
+            s.commit()
+            return None
 
     def test(self) -> dict:
         info = self._client().models.retrieve("claude-sonnet-5-5")

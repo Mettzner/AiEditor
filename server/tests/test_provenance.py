@@ -234,3 +234,39 @@ def test_api_associa_arquivo_autorizado(video):
                      data={"rights_note": "meu"})
         assert bad.status_code == 400
         assert c.delete(f"/api/authorized-media/{card['id']}").status_code == 200
+
+
+@needs_ffmpeg
+def test_catalogo_local_vem_antes_das_apis(env, video):
+    with session_scope() as s:
+        s.exec(delete(AuthorizedMedia))
+        s.add(AuthorizedMedia(local_path=str(video), sha256="y", original_name="dark country road at night.mp4",
+                              rights_note="filmado por mim", duration=30, width=1280, height=720))
+        s.commit()
+    calls = []
+    env["monkeypatch"].setattr(yt, "search_page", lambda *a, **k: calls.append(a) or ([], None))
+    before = sum(p.calls for p in env["stock"])
+    entry = sel_mod.Selector(make_ctx()).select_scene(scene(source="youtube"))
+    assert entry["provider"] == "authorized_local" and "filmado por mim" in entry["obtained_how"]
+    assert not calls and sum(p.calls for p in env["stock"]) == before  # nenhuma API consultada
+    with session_scope() as s:
+        s.exec(delete(AuthorizedMedia))
+        s.commit()
+
+
+def test_reaproveitamento_de_imagem_gerada_e_opcional_e_limitado(tmp_path, monkeypatch):
+    from app.pipeline import imagegen
+
+    update_settings({"ai_images": {"reuse_cache": False}})
+    dest = tmp_path / "a.png"
+    dest.write_bytes(b"img")
+    imagegen.remember_generated("p", None, "real_footage", dest)
+    assert not imagegen.reuse_generated("p", None, "real_footage", tmp_path / "b.png")  # desligado por padrão
+    update_settings({"ai_images": {"reuse_cache": True, "max_reuse": 1}})
+    try:
+        imagegen.remember_generated("p", None, "real_footage", dest)
+        assert imagegen.reuse_generated("p", None, "real_footage", tmp_path / "b.png")
+        assert not imagegen.reuse_generated("p", None, "real_footage", tmp_path / "c.png")  # limite editorial
+        assert not imagegen.reuse_generated("p", "ref-outro", "real_footage", tmp_path / "d.png")  # outra referência
+    finally:
+        update_settings({"ai_images": {"reuse_cache": False}})

@@ -30,6 +30,59 @@ class GeneratedImage:
     style: str = "real_footage"
 
 
+def _gen_key(prompt: str, reference_key: str | None, look: str) -> str:
+    import hashlib
+
+    return hashlib.sha256("|".join(["darkvi", prompt, reference_key or "", look]).encode()).hexdigest()[:24]
+
+
+def _gen_cfg() -> dict:
+    from ..config import load_settings
+
+    return load_settings().get("ai_images") or {}
+
+
+def reuse_generated(prompt: str, reference_key: str | None, look: str, dest: Path) -> bool:
+    """Reaproveita uma imagem já gerada com o MESMO prompt, modelo, referência e estilo — só se ligado na
+    Configuração (confira se os termos do provedor permitem) e no máximo `max_reuse` vezes (repetição editorial).
+    A validação visual roda de novo sobre os bytes, no contexto da cena atual."""
+    import json
+    import shutil
+
+    from ..config import CACHE_DIR
+
+    cfg = _gen_cfg()
+    if not cfg.get("reuse_cache"):
+        return False
+    key = _gen_key(prompt, reference_key, look)
+    img, meta = CACHE_DIR / "generated" / f"{key}.png", CACHE_DIR / "generated" / f"{key}.json"
+    if not img.exists() or not meta.exists():
+        return False
+    info = json.loads(meta.read_text(encoding="utf-8"))
+    if int(info.get("reused", 0)) >= int(cfg.get("max_reuse", 1)):
+        return False
+    shutil.copyfile(img, dest)
+    info["reused"] = int(info.get("reused", 0)) + 1
+    meta.write_text(json.dumps(info), encoding="utf-8")
+    return True
+
+
+def remember_generated(prompt: str, reference_key: str | None, look: str, dest: Path) -> None:
+    import json
+    import shutil
+
+    from ..config import CACHE_DIR
+
+    if not _gen_cfg().get("reuse_cache") or not dest.exists():
+        return
+    folder = CACHE_DIR / "generated"
+    folder.mkdir(parents=True, exist_ok=True)
+    key = _gen_key(prompt, reference_key, look)
+    shutil.copyfile(dest, folder / f"{key}.png")
+    (folder / f"{key}.json").write_text(json.dumps({"provider": "darkvi", "reference": reference_key, "look": look,
+                                                   "reused": 0}), encoding="utf-8")
+
+
 def scene_context(scene: dict, brief: dict | None, style: str, previous: str = "",
                   media_style: str = "real_preferred") -> SceneContext:
     brief = brief or {}
@@ -58,7 +111,9 @@ def generate_validated(scene: dict, brief: dict | None, style: str, dest: Path, 
     last_seen, last_score = "", None
     for attempt in (1, 2):
         prompt = build_image_prompt(scene, brief, feedback, look, period_look=period_look, extra_avoid=extra_avoid)
-        darkvi_images.generate(prompt, dest, reference_key=reference_key)
+        if not reuse_generated(prompt, reference_key, look, dest):
+            darkvi_images.generate(prompt, dest, reference_key=reference_key)
+            remember_generated(prompt, reference_key, look, dest)
         if not vision.available():
             return GeneratedImage(True, dest, prompt, None, "", attempt, style=look)
         try:

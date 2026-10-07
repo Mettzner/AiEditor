@@ -285,12 +285,37 @@ async def create_production(
     return _cards(s, [p])[0]
 
 
+def cancel_batches(production_id: int) -> int:
+    """Cancela no provedor os lotes ainda abertos da produção (a pedido do usuário). Devolve quantos."""
+    from ..models import BatchJob
+    from ..providers.llm.anthropic import AnthropicLLM
+
+    n = 0
+    with session_scope() as s:
+        jobs = list(s.exec(select(BatchJob).where(BatchJob.production_id == production_id,
+                                                  BatchJob.status == "submitted")))
+        for job in jobs:
+            try:
+                AnthropicLLM()._client().messages.batches.cancel(job.batch_id)
+            except Exception:  # noqa: BLE001 — sem rede/chave: o lote expira sozinho e não é consumido
+                pass
+            job.status = "cancelled"
+            s.add(job)
+            n += 1
+        s.commit()
+    return n
+
+
 @router.post("/productions/{production_id}/cancel")
 def cancel_production(production_id: int, s: Session = Depends(get_session)):
     p = s.get(Production, production_id)
     if not p:
         raise HTTPException(404, "Produção não encontrada")
-    if p.status in ("queued", "preparing"):
+    if p.status == "waiting_provider":
+        cancel_batches(production_id)
+        p.status = "cancelled"
+        p.step_label = "Cancelado"
+    elif p.status in ("queued", "preparing"):
         p.status = "cancelled"
         p.step_label = "Cancelado"
     elif p.status == "running":

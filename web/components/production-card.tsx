@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 const STATUS: Record<Production["status"], { label: string; className: string }> = {
   preparing: { label: "Preparando", className: "bg-muted text-muted-foreground" },
   queued: { label: "Na fila", className: "bg-muted text-muted-foreground" },
+  waiting_provider: { label: "Aguardando lote", className: "bg-amber-500/15 text-amber-300" },
   running: { label: "Em produção", className: "bg-sky-500/15 text-sky-300" },
   done: { label: "Concluído", className: "bg-emerald-500/15 text-emerald-300" },
   failed: { label: "Falhou", className: "bg-red-500/15 text-red-300" },

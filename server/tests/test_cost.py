@@ -153,19 +153,28 @@ def test_lote_cortado_nao_vira_erro_de_json_sem_custo(env, monkeypatch):
 
     cut = fake_response(None, in_t=50, out_t=16000, stop="max_tokens", text='{"answer":"cort')
 
+    from app.providers.llm.base import BatchPending
+
+    sent = {}
+
     class FakeBatches:
         def create(self, **kw):
-            return SimpleNamespace(id="b1", processing_status="ended")
+            sent["custom_id"] = kw["requests"][0]["custom_id"]
+            return SimpleNamespace(id="b1", processing_status="in_progress")
 
         def retrieve(self, _id):
             return SimpleNamespace(id="b1", processing_status="ended")
 
         def results(self, _id):
-            return [SimpleNamespace(result=SimpleNamespace(type="succeeded", message=cut))]
+            return [SimpleNamespace(custom_id=sent["custom_id"],
+                                    result=SimpleNamespace(type="succeeded", message=cut))]
 
     client = SimpleNamespace(messages=SimpleNamespace(batches=FakeBatches()))
     monkeypatch.setattr(A.AnthropicLLM, "_client", lambda self: client)
-    with pytest.raises(A.LLMCallFailed) as err:
+    with pytest.raises(BatchPending):  # 1ª vez: envia o lote e a etapa pausa (sem laço de espera)
+        A.AnthropicLLM().structured(model="claude-sonnet-5-5", system="S", user="lote 1", schema=Out, task="plan",
+                                    batch=True)
+    with pytest.raises(A.LLMCallFailed) as err:  # retomada: o resultado chegou, cortado
         A.AnthropicLLM().structured(model="claude-sonnet-5-5", system="S", user="lote 1", schema=Out, task="plan",
                                     batch=True)
     assert err.value.truncated and err.value.usage.batch

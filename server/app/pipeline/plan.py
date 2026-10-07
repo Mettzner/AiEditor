@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from ..directions import get_direction
 from ..lang import name as lang_name
 from ..budget import BudgetExceeded, paid_llm
-from ..providers.llm.base import call_llm, estimate_cost
+from ..providers.llm.base import BatchPending, call_llm, estimate_cost
 from ..worker.context import JobContext
 from .allocate import allocate
 from .context import (ContextBible, beat_for_unit, block_by_id, block_for_unit, finish_bible, neutral_bible,
@@ -290,6 +290,8 @@ def write_bible(ctx: JobContext, context: str, units: list[dict], economy: bool 
                 batch=economy), estimate_cost("bible", system=PLAN_SYSTEM, context=context, user=user,
                                               max_tokens=16000))
             return finish_bible(parsed.model_dump(), len(units), units)
+        except BatchPending:
+            raise
         except BudgetExceeded as e:
             ctx.issue("BUDGET_EXCEEDED", "Teto de gasto: a Bíblia de Contexto não foi gerada; usando um contexto "
                       "atemporal neutro", detail=str(e))
@@ -355,6 +357,8 @@ def run(ctx: JobContext) -> str:
                     estimate_cost("plan", system=PLAN_SYSTEM, context=[context, brief], user=user,
                                   max_tokens=PLAN_MAX_TOKENS))
                 return _validate(parsed, win[0]["i"], win[-1]["i"], media_style, bible)
+            except BatchPending:
+                raise
             except BudgetExceeded as e:
                 err = e
                 break
@@ -393,8 +397,20 @@ def run(ctx: JobContext) -> str:
         # a 1ª janela sozinha grava o prefixo (sistema + roteiro, ~23 mil tokens) no cache do prompt; as demais,
         # em paralelo, leem do cache a 1/12 do preço em vez de cada uma gravar de novo
         first = plan_window(0, bible)
+
+        def safe(wi: int):
+            try:
+                return plan_window(wi, bible)
+            except BatchPending as e:  # cada janela registra o próprio lote; a etapa pausa depois de todas
+                return e
+
         with ThreadPoolExecutor(max_workers=4) as pool:
-            results = [first, *pool.map(lambda wi: plan_window(wi, bible), range(1, len(windows)))]
+            rest = list(pool.map(safe, range(1, len(windows))))
+        pending = [r for r in rest if isinstance(r, BatchPending)]
+        if pending:
+            raise BatchPending(f"{len(pending)} janela(s) aguardando lote", min(p.retry_at for p in pending),
+                               pending[0].batch_id)
+        results = [first, *rest]
     drafts: list[SceneDraft] = [sc for r in results for sc in r.scenes]
     mood = next((r.music_mood for r in results if r.music_mood), None)
 

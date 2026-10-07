@@ -230,6 +230,11 @@ def paid_llm(ctx, task: str, call, estimate: float, step: str | None = None):
     try:
         parsed, usage = call()
     except Exception as e:
+        from .providers.llm.base import BatchPending
+
+        if isinstance(e, BatchPending):  # nada cobrado ainda: o custo entra quando o lote voltar
+            res.settle(None)
+            raise
         paid = failed_usage(e)
         if paid is not None:  # a Anthropic cobra a tentativa mesmo sem resposta aproveitável
             ctx.record_llm(paid, step=step) if step else ctx.record_llm(paid)

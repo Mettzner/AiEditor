@@ -36,6 +36,7 @@ CATALOG: dict[str, tuple[str, str]] = {
     "DRIVE_UPLOAD_FAILED": ("error", "Upload para o Drive falhou; arquivo mantido localmente"),
     "DRIVE_NOT_CONFIGURED": ("warning", "Conta Google não conectada; vídeo ficou só local"),
     "STEP_FAILED": ("error", "Etapa falhou"),
+    "STEP_INVALIDATED": ("info", "Etapa concluída refeita porque as entradas mudaram ou a saída sumiu"),
 }
 
 

@@ -86,7 +86,7 @@ def technical_filter(cands: list[Candidate], duration: float, used: set[str], cf
         if c.duration < duration + cfg["duration_margin"]:
             reject("curto")
             continue
-        if c.provider in ("youtube", "authorized_youtube"):
+        if c.provider in ("youtube", "authorized_youtube", "authorized_local"):
             if c.height < cfg.get("youtube_min_height", 720):
                 reject("resolução")
             elif c.duration > youtube_max_duration:

@@ -35,6 +35,14 @@ def _recover() -> None:
         s.commit()
 
 
+def _wake_waiting() -> None:
+    """Produções aguardando lote voltam para a fila quando chega a hora de conferir (sem laço ocupando o worker)."""
+    with session_scope() as s:
+        s.exec(update(Production).where(Production.status == "waiting_provider", Production.resume_at <= now())
+               .values(status="queued", step_label="Conferindo lote do provedor", updated_at=now()))
+        s.commit()
+
+
 def _claim_next() -> int | None:
     with session_scope() as s:
         candidate = s.exec(select(Production.id).where(Production.status == "queued")
@@ -66,6 +74,7 @@ def main() -> None:
                 active.pop(pid)
                 if fut.exception():
                     log.exception("produção %s terminou com exceção", pid, exc_info=fut.exception())
+        _wake_waiting()
         while len(active) < max_parallel:
             pid = _claim_next()
             if pid is None:

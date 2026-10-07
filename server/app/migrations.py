@@ -91,11 +91,18 @@ def _m004_segment_usage(conn: Connection) -> None:
     add_column(conn, "usedasset", "channel_ref", "VARCHAR")
 
 
+def _m005_production_resume_at(conn: Connection) -> None:
+    """Produção aguardando provedor (lote da Batch API) guarda quando o worker volta a conferir."""
+    if "production" in _tables(conn):
+        add_column(conn, "production", "resume_at", "DATETIME")
+
+
 MIGRATIONS: list[tuple[int, str, Callable[[Connection], None]]] = [
     (1, "baseline 1.0.0", _m001_baseline),
     (2, "cota do YouTube por bucket e status do cache de busca", _m002_quota_buckets_and_cache_status),
     (3, "preços com moeda, data e regime", _m003_price_metadata),
     (4, "uso de asset por segmento", _m004_segment_usage),
+    (5, "produção aguardando lote do provedor", _m005_production_resume_at),
 ]
 
 

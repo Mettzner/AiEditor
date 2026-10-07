@@ -62,6 +62,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
                 # plataforma, mesmo com licença CC; fica registrado no manifesto e é escolha explícita do usuário)
                 "ingest_mode": "reference",
                 "references_per_scene": 5},
+    # reaproveitar imagem gerada com o mesmo prompt/modelo/referência/estilo: desligado (confira os termos do
+    # provedor antes de ligar); max_reuse limita a repetição editorial da mesma imagem
+    "ai_images": {"reuse_cache": False, "max_reuse": 1},
     "ai_image_providers": [
         {"id": "darkvi", "enabled": True, "priority": 1},
     ],

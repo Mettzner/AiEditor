@@ -40,6 +40,8 @@ class Production(SQLModel, table=True):
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     updated_at: datetime = Field(default_factory=now, index=True)
+    # waiting_provider: quando o worker volta a conferir (lote da Batch API em andamento)
+    resume_at: Optional[datetime] = None
 
 
 class ProductionStep(SQLModel, table=True):
@@ -206,6 +208,27 @@ class QuotaUsage(SQLModel, table=True):
     blocked_until: Optional[float] = None  # time.time(); limite por minuto
     block_reason: Optional[str] = None
     origin: Optional[str] = None  # "migrated_estimate" quando veio do saldo único legado
+    updated_at: datetime = Field(default_factory=now)
+
+
+class BatchJob(SQLModel, table=True):
+    """Pedido enviado à Batch API (Fase E3): sobrevive a reinício do worker sem reenviar nem cobrar em dobro."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    production_id: Optional[int] = Field(default=None, index=True)
+    task: str = ""
+    provider: str = "anthropic"
+    request_hash: str = Field(index=True, unique=True)  # mesma chave do cache local de respostas
+    batch_id: str = ""
+    custom_id: str = ""
+    status: str = "submitted"  # submitted | ended | failed | cancelled | expired
+    result: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+    usage: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+    error: Optional[str] = None
+    polls: int = 0
+    created_at: datetime = Field(default_factory=now)
+    deadline_at: Optional[datetime] = None
+    next_poll_at: Optional[datetime] = None
     updated_at: datetime = Field(default_factory=now)
 
 
