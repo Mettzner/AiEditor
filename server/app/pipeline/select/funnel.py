@@ -65,6 +65,9 @@ class SceneContext:
     context: dict = field(default_factory=dict)  # contexto do bloco (época, lugar, anacronismos)
     meaning: str = ""  # o que o momento transmite na história (planejamento)
     beat: str = ""  # trecho da estrutura narrativa em que a cena está (bíblia)
+    must_not_imply: list[str] = field(default_factory=list)  # o que a imagem não pode sugerir (Fase B)
+    visual_role: str = "contextual_illustration"
+    required_identity: str = "generic"
 
     @property
     def setting_type(self) -> str | None:
@@ -102,7 +105,9 @@ def _render_prompt(ctx: SceneContext, n: int, frames: int) -> str:
         subject=ctx.subject or ctx.intent, must_show=json.dumps(ctx.must_show, ensure_ascii=False),
         must_avoid=json.dumps(ctx.must_avoid, ensure_ascii=False), intent=ctx.intent,
         allowed_styles=", ".join(ctx.allowed_styles), style_reason=ctx.style_reason or "-",
-        previous=ctx.previous or "(none)", context=vision_context(ctx.context), n=n, frames=frames)
+        previous=ctx.previous or "(none)", context=vision_context(ctx.context), n=n, frames=frames,
+        must_not_imply=json.dumps(ctx.must_not_imply, ensure_ascii=False), visual_role=ctx.visual_role,
+        required_identity=ctx.required_identity)
 
 
 def _store_descriptions(rows: list[list], cands: list[Candidate], result: list[dict], provider: str) -> None:

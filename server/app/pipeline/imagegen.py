@@ -40,7 +40,10 @@ def scene_context(scene: dict, brief: dict | None, style: str, previous: str = "
         must_avoid=list(scene.get("must_avoid") or []) + scene_anachronisms(scene) + list(brief.get("global_avoid") or []),
         topic=brief.get("topic", ""), visual_world=brief.get("visual_world", ""), allowance=allowance,
         allowed_styles=allowed, style_reason=scene.get("style_reason", ""), context=scene.get("context") or {},
-        meaning=scene.get("meaning", ""), beat=scene.get("beat", ""))
+        meaning=scene.get("meaning", ""), beat=scene.get("beat", ""),
+        must_not_imply=list(scene.get("must_not_imply") or []),
+        visual_role=scene.get("visual_role") or "contextual_illustration",
+        required_identity=scene.get("required_identity") or "generic")
 
 
 def generate_validated(scene: dict, brief: dict | None, style: str, dest: Path, cfg: dict, stats: dict,

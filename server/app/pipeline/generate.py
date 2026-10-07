@@ -17,6 +17,7 @@ from ..models import Channel
 from ..providers.darkvi import images as darkvi_images
 from ..providers.darkvi.client import DarkviError
 from ..worker.context import JobContext
+from .charts import draw_charts
 from .context import video_look
 from .imagegen import generate_validated
 from .validation import classify, policy
@@ -146,6 +147,7 @@ def run(ctx: JobContext) -> str:
 
     plan = ctx.read_json("plan.json")
     sel = Selector(ctx)
+    draw_charts(ctx, sel, plan)  # produção só de IA também desenha os gráficos com fonte
     scenes = [s for s in plan["scenes"]
               if (s["source"] == "ai" and s["id"] not in sel.selection)
               or sel.selection.get(s["id"], {}).get("source") == "migrate_ai"]

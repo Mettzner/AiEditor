@@ -42,6 +42,7 @@ from ...providers.stock.archives import ARCHIVES
 from ...providers.youtube import client as youtube
 from ...worker.context import JobContext, StepError
 from ..allocate import youtube_first
+from ..charts import draw_charts
 from ..context import HISTORICAL, STRATEGY_LABEL, is_historical, scene_anachronisms, strategy_order, video_look
 from ...budget import BudgetExceeded, VisionBudget, paid_llm
 from ..plan import load_bible
@@ -196,7 +197,10 @@ class Selector:
                                           + list(self.brief.get("global_avoid") or []))),
             topic=self.brief.get("topic", ""), visual_world=self.brief.get("visual_world", ""),
             allowance=allowance, allowed_styles=allowed, style_reason=scene.get("style_reason", ""),
-            context=scene.get("context") or {}, meaning=scene.get("meaning", ""), beat=scene.get("beat", ""))
+            context=scene.get("context") or {}, meaning=scene.get("meaning", ""), beat=scene.get("beat", ""),
+            must_not_imply=list(scene.get("must_not_imply") or []),
+            visual_role=scene.get("visual_role") or "contextual_illustration",
+            required_identity=scene.get("required_identity") or "generic")
 
     @staticmethod
     def _timeless_view(scene: dict) -> dict:
@@ -732,6 +736,7 @@ def run(ctx: JobContext) -> str:
     started = time.perf_counter()
     plan = ctx.read_json("plan.json")
     sel = Selector(ctx)
+    draw_charts(ctx, sel, plan)  # números com fonte: gráfico desenhado pelo código, sem busca nem visão
     real = [s for s in plan["scenes"] if s["source"] in ("stock", "youtube")]
     todo = [s for s in real if s["id"] not in sel.selection]
     if real and not sel.providers and not sel.youtube_on:

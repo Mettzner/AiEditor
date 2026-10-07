@@ -15,6 +15,8 @@ CATALOG: dict[str, tuple[str, str]] = {
     "AI_IMAGE_REJECTED": ("warning", "Imagem gerada reprovou 2x na validação"),
     "QUERY_REWRITTEN": ("info", "Queries reescritas após reprovação"),
     "SCENE_REVIEW_REQUIRED": ("warning", "Cena precisa de revisão (identidade exata ou evidência sem confirmação)"),
+    "INTERPRETATION_REVIEW": ("warning", "Interpretação do roteiro a revisar (ambiguidade, referência ou divisão)"),
+    "SCRIPT_CONTRADICTION": ("warning", "O roteiro afirma e nega a mesma coisa"),
     "SCENE_GENERIC_FALLBACK": ("warning", "Usada uma foto genérica do assunto por falta de opção"),
     "LANGUAGE_MISMATCH": ("warning", "Idioma escolhido para o vídeo diverge do idioma detectado no roteiro"),
     "OVERLAY_LANGUAGE_FIXED": ("info", "Texto de overlay estava em outro idioma e foi corrigido"),

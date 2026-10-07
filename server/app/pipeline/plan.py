@@ -29,6 +29,8 @@ from .allocate import allocate
 from .context import (ContextBible, beat_for_unit, block_by_id, block_for_unit, finish_bible, neutral_bible,
                       period_allowed_styles, scene_context, strategy_order, video_look)
 from .pacing import max_scene_seconds, pace
+from .semantics import (DataPoint, InterpConfidence, RequiredIdentity, VisualRole, check_scene, reconcile,
+                        script_evidence)
 from .visual import (MEDIA_STYLE_RULES, NUMBER_HINTS, PLAN_SYSTEM, Style, StyleAllowance, brief_section,
                      sanitize_free_query, sanitize_queries, scene_style)
 
@@ -126,6 +128,19 @@ class SceneDraft(BaseModel):
     archival_query: str
     timeless_alternative: str
     timeless_query: str
+    # Fase B (padrões para o agrupamento automático e respostas antigas)
+    entity_ids: list[str] = []
+    claim_ids: list[str] = []
+    evidence_quote: str = ""
+    visual_role: VisualRole = "contextual_illustration"
+    required_identity: RequiredIdentity = "generic"
+    interpretation_confidence: InterpConfidence = "explicit"
+    unresolved: list[str] = []
+    must_not_imply: list[str] = []
+    documentary_query: str = ""
+    comparison: bool = False
+    data_points: list[DataPoint] = []
+    data_source: str = ""
 
 
 class PlanWindow(BaseModel):
@@ -174,11 +189,20 @@ def _validate(window: PlanWindow, first: int, last: int, media_style: str = "rea
             break
     if expected <= last:
         fixed[-1].last_unit = last
+    if bible:
+        fixed = _split_at_contexts(fixed, bible)
     for s in fixed:
         block = None
         if bible:
             # a cena herda o bloco que contém suas unidades; um id válido diferente vale como sobrescrita pontual
-            block = block_by_id(bible, s.context_id) or block_for_unit(bible, s.first_unit)
+            own = block_for_unit(bible, s.first_unit)
+            block = own
+            if s.context_id and own and s.context_id != own["id"] and block_by_id(bible, s.context_id):
+                if s.comparison or s.visual_role == "comparison":
+                    block = block_by_id(bible, s.context_id)
+                else:
+                    s.unresolved = list(s.unresolved) + [f"contexto {s.context_id} pedido sem comparação "
+                                                         f"declarada; mantido {own['id']} das unidades"]
             s.context_id = block["id"] if block else ""
         feas = (block or {}).get("footage_feasibility")
         historical = (block or {}).get("setting_type") == "historical"
@@ -213,6 +237,31 @@ def _validate(window: PlanWindow, first: int, last: int, media_style: str = "rea
             s.era_markers_to_show = []
     window.scenes = fixed
     return window
+
+
+def _split_at_contexts(scenes: list[SceneDraft], bible: dict) -> list[SceneDraft]:
+    """Cena que atravessa dois blocos de contexto (outra época ou lugar) é dividida na fronteira, salvo comparação
+    declarada. A divisão fica registrada em `unresolved` da parte nova (nunca silenciosa)."""
+    from .context import blocks as context_blocks
+
+    bounds = sorted(b["first_unit"] for b in context_blocks(bible))[1:]
+    out: list[SceneDraft] = []
+    for s in scenes:
+        cuts = [b for b in bounds if s.first_unit < b <= s.last_unit]
+        if not cuts or s.comparison:
+            out.append(s)
+            continue
+        start = s.first_unit
+        for edge in cuts + [s.last_unit + 1]:
+            part = s.model_copy(deep=True)
+            part.first_unit, part.last_unit = start, edge - 1
+            part.context_id = ""  # cada parte herda o bloco das próprias unidades
+            if start != s.first_unit:
+                part.unresolved = list(part.unresolved) + [f"cena dividida na troca de contexto (unidade {start})"]
+                part.chapter_break, part.quote, part.highlight = False, None, None
+            out.append(part)
+            start = edge
+    return out
 
 
 def load_bible(job_dir) -> dict:
@@ -371,6 +420,8 @@ def run(ctx: JobContext) -> str:
             # must_avoid efetivo = confusões da cena + anacronismos do bloco (as queries usam só as confusões)
             "anachronisms": list(context.get("anachronisms") or []),
         }
+        check_scene(scene, scene["text"], bible)
+        scene["script_evidence"] = script_evidence(scene, units)
         if context.get("setting_type") == "historical":
             scene["strategy_order"] = strategy_order(context.get("footage_feasibility"), media_style)
             scene["queries_by_strategy"] = {
@@ -384,6 +435,8 @@ def run(ctx: JobContext) -> str:
     # tempo em tela perto da média e nunca acima do teto: fragmentos juntados, cenas longas viram tomadas
     scenes = pace(scenes, transcript["words"], avg)
 
+    for problem in reconcile(scenes, bible):  # contradições, entidades e ambiguidades (sem chamada extra)
+        ctx.issue(problem["code"], problem["message"], scene=problem.get("scene"))
     allocation = allocate(scenes, ctx.config)
     for s in scenes:
         s["source"] = allocation[s["id"]]

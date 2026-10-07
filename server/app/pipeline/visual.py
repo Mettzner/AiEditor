@@ -24,6 +24,7 @@ StyleAllowance = Literal["real_only", "real_preferred", "stylized_ok"]
 # tema/público/tom/mundo visual/entidades recorrentes/global_avoid, mais a linha do tempo de contextos (época,
 # lugar, sociedade, cultura material, anacronismos). Esquema e regras ficam em pipeline/context.py.
 from .context import BIBLE_RULES, DEFAULT_GLOBAL_AVOID  # noqa: E402
+from .semantics import PLAN_SEMANTICS_RULES  # noqa: E402
 
 
 # ---------------------------------------------------------------- Etapa B: brief visual por cena
@@ -137,7 +138,8 @@ CONTEXT (every scene lives in the context block that contains its units)
   When a stylized look is wanted, a query may include it ("human cell 3d animation", "ancient rome
   painting", "cryptid illustration forest").
   Forbidden in queries: abstract words (benefits, health, power, secret), brands, franchises, scientific
-  names, verbs without an object, lone adjectives, and any word from must_avoid.
+  names, verbs without an object, lone adjectives, and any word from must_avoid. (Exact names, scientific names
+  and years go in documentary_query, used on YouTube and archives.)
 - kind: "concreto" (filmable and generic), "abstrato" (concept/emotion), "evento_especifico" (a real,
   identifiable fact, place or person).
 - energy: "baixa" | "media" | "alta".
@@ -145,6 +147,8 @@ CONTEXT (every scene lives in the context block that contains its units)
   archive/news footage; ai = AI-generated still (good for very specific, historical or stylized scenes).
 - ai_kind: "video" if motion is essential, "image" if a still with slow camera motion is enough.
 - music_mood: only in the first window, 3 to 5 words for the whole video's musical mood; otherwise null.
+
+""" + PLAN_SEMANTICS_RULES + """
 
 ON-SCREEN TEXT
 All on-screen text (cards, titles, highlights, lists, captions) MUST be written in the VIDEO LANGUAGE given in
@@ -664,6 +668,9 @@ What this moment conveys: "{meaning}"
 Main subject that MUST be clearly visible: "{subject}"
 Must show: {must_show}
 Must NOT show: {must_avoid}
+Must NOT suggest: {must_not_imply}
+Visual role: {visual_role} (exact_evidence = only the exact real event, person or object counts; required
+identity: {required_identity})
 Intended shot: {intent}
 Allowed styles for this scene: {allowed_styles} ({style_reason})
 Previous scene (avoid an identical shot): {previous}
@@ -708,6 +715,11 @@ def vision_context(ctx: dict | None) -> str:
     if setting == "timeless":
         return (f'Time period of this scene: timeless (no visible era markers). Place: "{place}".\n'
                 f"Must NOT show clearly modern or clearly antique items: {anach}.")
+    if ctx.get("recent_past") or ctx.get("narrative_time") == "past":
+        era = ctx.get("era") or "the recent past"
+        return (f'Time period of this scene: {era} (recent past: present-day footage is fine if nothing looks newer '
+                f'than {era}). Place: "{place}".\n'
+                f"Elements that would look like another era or place: {anach}.")
     return (f'Time period of this scene: present day. Place: "{place}".\n'
             f"Elements that would look like another era or place: {anach}.")
 

@@ -15,6 +15,9 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from .semantics import (BIBLE_SEMANTICS_RULES, Ambiguity, NarrativeTime, ScriptClaim, ScriptEntity, finish_claims,
+                        finish_entities, link_recurring, narrative_time_for)
+
 SettingType = Literal["historical", "contemporary", "timeless"]
 Feasibility = Literal["pre_photo", "pre_film", "early_film", "historical_modern", "contemporary", "timeless"]
 Confidence = Literal["explicit", "inferred", "none"]
@@ -53,6 +56,8 @@ class ContextBlock(BaseModel):
     mood: str
     footage_feasibility: Feasibility
     card_text: str
+    # tempo NARRADO (um fato de 2005 contado hoje é passado), separado da viabilidade de filmagem
+    narrative_time: NarrativeTime | None = None  # None: derivado do setting_type
 
 
 class BibleEntity(BaseModel):
@@ -84,6 +89,10 @@ class ContextBible(BaseModel):
     recurring_entities: list[BibleEntity]
     recurring_places: list[BibleEntity]
     global_avoid: list[str]
+    # Fase B: interpretação tipada (com padrões para ler bíblias antigas)
+    entities: list[ScriptEntity] = []
+    claims: list[ScriptClaim] = []
+    ambiguities: list[Ambiguity] = []
 
 
 BIBLE_RULES = """CONTEXT BIBLE, written once from the WHOLE script, before any scene, when the request asks for it. It says WHAT
@@ -150,7 +159,8 @@ the social situation), the emotional arc and the message.
 - global_avoid: text on screen, watermarks, logos, existing characters or franchises, plus likely confusions.
 - The script is the source of truth: infer only what is coherent with it and never contradict it. Be specific
   ("Victorian England, urban working class" beats "19th century", which beats "old"). Represent people as the script
-  and the historical and geographic context indicate, with respect, never as caricature or stereotype."""
+  and the historical and geographic context indicate, with respect, never as caricature or stereotype.
+""" + BIBLE_SEMANTICS_RULES
 
 
 # ---------------------------------------------------------------- época → viabilidade (§3)
@@ -215,7 +225,7 @@ def neutral_bible(title: str, visual_style: str, n_units: int) -> dict:
         place_confidence="none", climate="", landscape="", society="", clothing="", architecture="", interiors="",
         lighting="natural light", transport="", objects=[], era_markers_to_show=[],
         anachronisms=["phones", "screens", "cars", "plastic packaging"], search_vocabulary=[], palette="", mood="",
-        footage_feasibility="timeless", card_text="")
+        footage_feasibility="timeless", card_text="", narrative_time="timeless")
     bible = ContextBible(summary="", intent="", genre="", topic=title, audience="general audience", tone="informative",
                          region_culture="everyday neutral setting", visual_world="real life",
                          visual_style=visual_style or "", period_look="cinematic", story_beats=[], contexts=[block],
@@ -262,17 +272,23 @@ def finish_bible(raw: dict, n_units: int, units: list[dict] | None = None) -> di
         if not b.get("id") or b["id"] in seen_ids:
             b["id"] = f"ctx{n}"
         seen_ids.add(b["id"])
+        narrated = narrative_time_for(b)
         b["footage_feasibility"] = feasibility_for(b.get("setting_type", "timeless"), b.get("era", ""),
                                                    b.get("era_label", ""), b.get("footage_feasibility", ""))
         if b["footage_feasibility"] == "contemporary" and b.get("setting_type") == "historical":
+            # passado recente (ex.: 2005): filmável com tecnologia atual, mas continua NARRADO no passado
             b["setting_type"] = "contemporary"
+            b["recent_past"] = True
+            narrated = "past" if narrated in ("present", "timeless") else narrated
+        b["narrative_time"] = narrated
         if b.get("setting_type") != "historical":
             b["era_markers_to_show"] = []
         b["search_vocabulary"] = [v for v in b.get("search_vocabulary") or [] if not re.fullmatch(r"\d{4}", v.strip())]
     timeline = []
     for b in fixed:
         item = {"id": b["id"], "units": [b["first_unit"], b["last_unit"]], "era": b.get("era"),
-                "era_label": b.get("era_label"), "place": b.get("place"), "setting_type": b.get("setting_type")}
+                "era_label": b.get("era_label"), "place": b.get("place"), "setting_type": b.get("setting_type"),
+                "narrative_time": b.get("narrative_time")}
         if units:
             item["time"] = f"{units[b['first_unit']]['start']:.1f}-{units[b['last_unit']]['end']:.1f}s"
         timeline.append(item)
@@ -280,9 +296,14 @@ def finish_bible(raw: dict, n_units: int, units: list[dict] | None = None) -> di
     out = {k: raw.get(k, "") for k in ("summary", "intent", "genre", "topic", "audience", "tone", "region_culture",
                                        "visual_world", "visual_style")}
     out["period_look"] = raw.get("period_look") if raw.get("period_look") in ("cinematic", "archival") else "cinematic"
+    entities = finish_entities(list(raw.get("entities") or []), n_units)
     out.update(story_beats=_fix_ranges(list(raw.get("story_beats") or []), n_units),
                context_timeline=timeline, contexts=contexts,
-               recurring_entities=list(raw.get("recurring_entities") or []),
+               entities=entities,
+               claims=finish_claims(list(raw.get("claims") or []), entities, n_units),
+               ambiguities=[Ambiguity.model_validate(a).model_dump() for a in raw.get("ambiguities") or []
+                            if isinstance(a, dict) and a.get("question")],
+               recurring_entities=link_recurring(list(raw.get("recurring_entities") or []), entities),
                recurring_places=list(raw.get("recurring_places") or []),
                global_avoid=list(dict.fromkeys(DEFAULT_GLOBAL_AVOID + list(raw.get("global_avoid") or []))))
     return out
@@ -346,7 +367,8 @@ def block_by_id(bible: dict, ctx_id: str | None) -> dict | None:
 # campos do contexto copiados para cada cena do plan.json (o resto do pipeline lê só a cena)
 SCENE_CONTEXT_FIELDS = ("setting_type", "era", "era_label", "place", "climate", "landscape", "society", "clothing",
                         "architecture", "interiors", "lighting", "transport", "objects", "era_markers_to_show",
-                        "anachronisms", "search_vocabulary", "palette", "footage_feasibility", "card_text")
+                        "anachronisms", "search_vocabulary", "palette", "footage_feasibility", "card_text",
+                        "narrative_time", "recent_past")
 
 
 def scene_context(block: dict | None) -> dict:
