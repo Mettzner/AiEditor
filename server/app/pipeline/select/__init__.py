@@ -35,13 +35,16 @@ from ...providers.darkvi import images as darkvi_images
 from ...providers.darkvi.client import DarkviError
 from ...providers.http import ProviderError, download
 from ...providers.llm import gemini
+from ...providers.llm import vision as vision_ai
 from ...providers.llm.base import call_llm, failed_usage
 from ...providers.stock import enabled_providers
 from ...providers.stock.archives import ARCHIVES
 from ...providers.youtube import client as youtube
 from ...providers.youtube import quota as yt_quota
 from ...worker.context import JobContext, StepError
+from ..allocate import youtube_first
 from ..context import HISTORICAL, STRATEGY_LABEL, is_historical, scene_anachronisms, strategy_order, video_look
+from ...budget import VisionBudget
 from ..plan import load_bible
 from ..timing import Timings
 from ..visual import (REWRITE_SYSTEM, QueryRewriteBatch, compact_json, image_type_for, sanitize_queries, scene_style,
@@ -126,14 +129,42 @@ class Selector:
         self.ai_image_on = bool(get_secret("darkvi")) and cfg.real_pct < 100 and cfg.ai_media != "video"
         self.franchises = load_settings()["selection"].get("blocked_franchises", [])
         self.reactive_quota_reported = False
+        self.quota_fallback_reported = False
+        self.youtube_first = youtube_first()
         self.vision_quota_reported = False
         self.darkvi_quota_hit = False
         self.timer = Timings()
+        # teto de gasto: o Claude só avalia clipes enquanto a produção couber no orçamento (app/budget.py)
+        self.budget = VisionBudget(ctx.production_id)
+        self.budget_reported = False
         self.totals: dict = {"searches": 0, "vision_calls": 0, "vision_failed": 0, "vision_cost": 0.0}
+
+    def record_vision(self, usage) -> None:
+        """Chamada paga do Claude na visão: entra no llm_usage.json e no custo da produção."""
+        self.ctx.record_llm(usage, "select")
+
+    def note_vision_budget(self) -> None:
+        with self.lock:
+            if self.budget_reported:
+                return
+            self.budget_reported = True
+        self.ctx.issue("VISION_BUDGET", f"Teto de US$ {self.budget.limit:.2f} por produção: a avaliação paga parou e "
+                       "o restante das cenas foi escolhido pelo ranking de texto (a produção continua)",
+                       detail=f"{self.budget.calls} avaliações pagas, US$ {self.budget.spent:.2f}")
 
     def save(self) -> None:
         with self.lock:
             self.ctx.write_json("selection.json", self.selection)
+
+    def _quota_fallback(self, scene: dict) -> None:
+        """Cota do YouTube acabou: avisa uma vez por produção; as cenas seguintes vão direto para os bancos."""
+        with self.lock:
+            first = not self.quota_fallback_reported
+            self.quota_fallback_reported = True
+        if first:
+            self.ctx.issue("YOUTUBE_QUOTA_FALLBACK", "Cota diária do YouTube acabou: desta cena em diante o vídeo usa "
+                           "bancos de vídeo e imagens (a cota volta à meia-noite do horário do Pacífico)",
+                           scene=scene["id"])
 
     def note_vision_quota(self, msg: str) -> None:
         with self.lock:
@@ -166,6 +197,9 @@ class Selector:
     def _queries_for(self, step: str, scene: dict, queries: list[str]) -> list[str]:
         """Queries de cada etapa. Cena histórica: YouTube usa a de reconstituição (antes de ~1890) ou a de arquivo
         (depois), conforme a viabilidade da época; acervos usam a de arquivo; atemporal, a do plano seguro."""
+        if step == "youtube" and scene.get("youtube_query") and queries == list(scene.get("queries") or []):
+            # tomadas da mesma cena repetem a busca da primeira (cache local: sem gastar cota de novo)
+            queries = [scene["youtube_query"]] + [q for q in queries if q != scene["youtube_query"]]
         if not is_historical(scene):
             return queries
         feas = scene["context"].get("footage_feasibility")
@@ -244,7 +278,10 @@ class Selector:
         ranked = rank(passed, queries + ([" ".join(vocab)] if vocab else []), scene.get("visual_intent", ""), dur,
                       int(self.cfg["prerank_keep"]), scene.get("subject", ""), scene.get("must_show") or [])
         stats["_timer"], stats["_scene"] = self.timer, sid
+        stats["_budget"], stats["_record"] = self.budget, self.record_vision
         choice = choose(ranked, self._scene_ctx(scene, previous, must_avoid), self.cfg, stats)
+        if stats.get("vision_budget"):
+            self.note_vision_budget()
         stats["style_rejected"] += choice.style_rejected
         if stats.get("vision_quota"):
             self.note_vision_quota(stats["vision_quota"])
@@ -298,6 +335,7 @@ class Selector:
         if self.darkvi_quota_hit:
             return None
         dest = self.ctx.path("assets", f"{scene['id']}.png")
+        stats["_budget"], stats["_record"] = self.budget, self.record_vision
         try:
             with self.timer.track(scene["id"], "geração de imagem (Darkvi)"):
                 result = generate_validated(scene, self.brief, self.visual_style, dest, self.cfg, stats,
@@ -367,7 +405,7 @@ class Selector:
                      must_avoid=list(must_avoid if must_avoid is not None else scene.get("must_avoid") or []),
                      previous=previous, allow_ai=allow_ai)
         stats = d.stats
-        vision = gemini.available()
+        vision = vision_ai.available()
         min_score = float(self.cfg["min_score"])
         rewrite_below = float(self.cfg.get("rewrite_below", min_score))
         reserve: list[Option] = []
@@ -385,8 +423,7 @@ class Selector:
                 if not self.youtube_on:
                     continue
                 if not yt_quota.can_search():
-                    self.ctx.issue("YOUTUBE_QUOTA_FALLBACK", "Sem cota do YouTube hoje; cena foi para os bancos",
-                                   scene=scene["id"])
+                    self._quota_fallback(scene)
                     continue
             elif source == "archive":
                 if not self.archives_on:
@@ -420,8 +457,7 @@ class Selector:
                     if first:
                         self.ctx.issue("PROVIDER_QUOTA", "O YouTube recusou por cota durante a busca; as próximas "
                                        "cenas vão direto para os bancos", scene=scene["id"])
-                self.ctx.issue("YOUTUBE_QUOTA_FALLBACK", "Sem cota do YouTube; cena foi para os bancos",
-                               scene=scene["id"])
+                self._quota_fallback(scene)
                 continue
             except ProviderError as e:
                 log.warning("cena %s: %s falhou: %s", scene["id"], source, e)
@@ -580,7 +616,8 @@ class Selector:
                      context_id=scene.get("context_id"),
                      style_allowance=allowance, allowed_styles=allowed, style_reason=scene.get("style_reason"),
                      continuity=stats.get("continuity"))
-        if entry["source_used"] != d.planned:
+        expected = self.youtube_first and {d.planned, entry["source_used"]} <= {"youtube", "stock"}
+        if entry["source_used"] != d.planned and not expected:  # YouTube primeiro: cair nos bancos é o esperado
             self.ctx.issue("SCENE_MIGRATED", f"Cena planejada para {SOURCE_LABEL[d.planned]} usou "
                            f"{SOURCE_LABEL[entry['source_used']]} ({d.planned} → {entry['source_used']})",
                            scene=scene["id"])
@@ -668,9 +705,16 @@ def run(ctx: JobContext) -> str:
         raise StepError("PROVIDER_QUOTA", "Nenhuma fonte de vídeo ativa: configure Pexels, Pixabay ou YouTube")
     if not gemini.available():
         st = gemini.quota_status()
-        log.info("Gemini indisponível (%s): seleção só pelo ranking de texto", st.get("reason") or "sem chave")
-        if st["blocked"]:
-            sel.note_vision_quota(st["reason"])
+        if vision_ai.paid_available():
+            who = "pela OpenAI (Claude se ela falhar)" if vision_ai.openai_usable() else "pelo Claude"
+            log.info("Gemini indisponível (%s): avaliação %s", st.get("reason") or "sem chave", who)
+            if st["blocked"]:
+                ctx.issue("VISION_FALLBACK", f"Gemini sem cota hoje: clipes e imagens são avaliados {who}, "
+                          f"até o teto de US$ {sel.budget.limit:.2f} da produção", detail=st["reason"])
+        else:
+            log.info("Gemini indisponível (%s): seleção só pelo ranking de texto", st.get("reason") or "sem chave")
+            if st["blocked"]:
+                sel.note_vision_quota(st["reason"])
 
     # imagens de IA começam já, em segundo plano (fila da Darkvi, 5/min), enquanto os bancos são avaliados
     ai_scenes = [s for s in plan["scenes"] if s["source"] == "ai" and s["id"] not in sel.selection]
@@ -690,13 +734,19 @@ def run(ctx: JobContext) -> str:
     # A) avaliar em paralelo
     decisions: list[Decision] = []
     done = 0
-    with ThreadPoolExecutor(max_workers=int(sel.cfg["parallel_scenes"])) as pool:
+    pool = ThreadPoolExecutor(max_workers=int(sel.cfg["parallel_scenes"]))
+    try:
         futures = {pool.submit(sel.decide, s, previous.get(s["id"], ""), True, None, "defer"): s for s in todo}
         for fut in as_completed(futures):
             ctx.check_cancel()
             decisions.append(fut.result())
             done += 1
             ctx.progress(0.5 * done / total, f"Avaliando cenas {done}/{len(todo)}")
+    except BaseException:
+        # falha ou cancelamento: as cenas ainda na fila não começam (cada uma gastaria buscas e visão à toa)
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    pool.shutdown()
 
     # A2) reescrita de queries: todas as cenas reprovadas numa única chamada, depois retomam a cadeia
     pending = [d for d in decisions if d.pending_rewrite]
