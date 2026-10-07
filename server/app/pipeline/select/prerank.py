@@ -105,7 +105,8 @@ def text_score(c: Candidate, queries: list[str], visual_intent: str, duration: f
                must_show: list[str] | None = None) -> float:
     """0,6 × sobreposição com assunto + must_show e 0,4 × com o resto; sem nenhuma palavra do assunto, −50%;
     estilo não permitido pela cena, −30% (c.penalty)."""
-    t = {_stem(x) for x in _tokens(c.title)}
+    # título/tags da fonte + o que uma IA de visão já viu nesse candidato em outra cena (observado, não aprovado)
+    t = {_stem(x) for x in _tokens(c.title)} | {_stem(x) for x in _tokens(getattr(c, "observed", ""))}
     subj = {_stem(x) for x in _tokens(subject)}
     key = subj | {_stem(x) for m in (must_show or []) for x in _tokens(m)}
     rest = {_stem(x) for q in queries for x in _tokens(q)} | {_stem(x) for x in _tokens(visual_intent)}

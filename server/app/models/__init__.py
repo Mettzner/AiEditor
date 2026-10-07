@@ -1,7 +1,7 @@
 from sqlmodel import select
 
 from .preset import CREATION_FIELDS, MusicConfig, Preset, ProductionConfig, SubtitleStyle
-from .tables import (CacheLease, Channel, Issue, LlmCache, Production, ProductionStep, ProviderPrice, QuotaUsage,
+from .tables import (AssetDescription, CacheLease, Channel, Issue, LlmCache, Production, ProductionStep, ProviderPrice, QuotaUsage,
                      SearchCache, UsedAsset, VisionCache, YtQuota, now)
 
 # Valores de partida, editáveis na Configuração. Confira os preços atuais de cada provedor.
@@ -36,6 +36,7 @@ def seed_defaults() -> None:
 
 
 __all__ = [
+    "AssetDescription",
     "CacheLease",
     "QuotaUsage",
     "CREATION_FIELDS",

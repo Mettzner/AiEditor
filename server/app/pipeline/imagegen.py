@@ -59,7 +59,7 @@ def generate_validated(scene: dict, brief: dict | None, style: str, dest: Path, 
         if not vision.available():
             return GeneratedImage(True, dest, prompt, None, "", attempt, style=look)
         try:
-            note = rate_local_image(dest, ctx, cfg["gemini_model"], stats, key_hint=f"{dest.name}:{attempt}:{prompt}")
+            note = rate_local_image(dest, ctx, cfg["gemini_model"], stats)  # identidade = bytes da imagem
         except Exception as e:  # noqa: BLE001 — sem validação possível (cota, rede), aceita a imagem
             if isinstance(e, gemini.GeminiQuotaExhausted):
                 stats["vision_quota"] = str(e)

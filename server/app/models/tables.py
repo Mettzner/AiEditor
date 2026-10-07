@@ -116,6 +116,25 @@ class VisionCache(SQLModel, table=True):
     created_at: datetime = Field(default_factory=now)
 
 
+class AssetDescription(SQLModel, table=True):
+    """O que uma IA de visão VIU num asset (só conteúdo observável), reaproveitável entre cenas.
+
+    Não guarda adequação a cena nenhuma: subject_visible, context_match e nota ficam no vision_cache, por pedido.
+    ref: hash dos bytes (imagem local) ou de candidato + URLs dos frames; content_hash: bytes que a IA viu.
+    """
+
+    ref: str = Field(primary_key=True)
+    candidate_key: str = Field(index=True)
+    content_hash: Optional[str] = None
+    seen: str = ""
+    realism: str = ""
+    brand_or_franchise: bool = False
+    is_timeless: bool = False
+    provider: str = ""
+    prompt_version: str = ""
+    created_at: datetime = Field(default_factory=now)
+
+
 class YtQuota(SQLModel, table=True):
     """LEGADO (até a migração 002): unidades da YouTube Data API num saldo único por dia. Mantida só para leitura
     histórica; o controle atual fica em QuotaUsage, por bucket."""

@@ -2,8 +2,13 @@
 
 A IA descreve o que vê (`seen`), classifica o estilo (`realism`), aponta franquias, se o assunto aparece e o
 que há de proibido; a nota final é calculada no código (visual.score_row) conforme os estilos aceitos na cena.
-Modo rápido: 1 chamada por fonte (sem desempate). Notas em cache (vision_cache). Sem Gemini, ou com a cota
-esgotada, vale o ranking de texto, sem espera.
+Modo rápido: 1 chamada por fonte (sem desempate). Sem Gemini, ou com a cota esgotada, vale o ranking de texto.
+
+Cache de visão (Fase A3): a chave é a requisição efetiva — prompt renderizado (narração, intenção, must_show,
+must_avoid, contexto, cena anterior, estilos aceitos), bytes da folha de miniaturas, modelos configurados e versão
+do prompt/schema. Bytes diferentes (ex.: outra imagem gerada com o mesmo prompt) ou outra exigência = nova
+avaliação. O que a IA VIU em cada candidato (descrição observável) fica à parte, em asset_description, e pode ser
+reaproveitado por outras cenas sem herdar a adequação.
 """
 from __future__ import annotations
 
@@ -13,12 +18,15 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from sqlmodel import select
+
+from ... import singleflight
 from ...db import session_scope
-from ...models import VisionCache
+from ...models import AssetDescription, VisionCache
 from ...providers.llm import gemini, vision
 from ...providers.stock.base import Candidate
-from ..visual import VISION_PROMPT, VisionSheet, compact_json, score_row, vision_context
-from .sheet import build_sheet, pick_frames
+from ..visual import VISION_PROMPT, VisionSheet, score_row, vision_context
+from .sheet import build_sheet, frame_bytes, pick_frames
 
 log = logging.getLogger("aieditor.select")
 
@@ -64,16 +72,64 @@ class SceneContext:
 
 
 ERA_FIELDS = ("era_consistent", "anachronisms_seen", "is_timeless", "place_consistent")
-CONTEXT_KEY_FIELDS = ("setting_type", "era", "era_label", "place", "clothing", "architecture", "lighting",
-                      "transport", "anachronisms")
+OBSERVED_FIELDS = ("seen", "realism", "brand_or_franchise", "is_timeless")  # só o que se vê, sem julgamento
+VISION_CACHE_VERSION = "v6"  # mude ao alterar VISION_PROMPT, VisionRow ou a montagem da folha
 
 
-def _cache_key(stage: str, cands: list[Candidate], ctx: SceneContext, model: str, frames: int) -> str:
-    context = compact_json({k: ctx.context.get(k) for k in CONTEXT_KEY_FIELDS}) if ctx.context else ""
-    raw = "|".join([stage, "v5", str(frames), ",".join(c.key for c in cands), ctx.intent, ctx.subject,
-                    ",".join(ctx.must_avoid), ctx.allowance, ",".join(ctx.allowed_styles), ctx.style, model, context,
-                    ctx.meaning, ctx.beat])
-    return hashlib.sha1(raw.encode()).hexdigest()
+def _schema_hash() -> str:
+    return hashlib.sha256(json.dumps(VisionSheet.model_json_schema(), sort_keys=True).encode()).hexdigest()[:16]
+
+
+def vision_cache_key(stage: str, prompt: str, sheet: bytes, model: str, refs: list[str] | None = None) -> str:
+    """Requisição efetiva: etapa, versão, modelos configurados, schema, prompt renderizado, bytes da folha e a
+    identidade de cada linha (frames que falharam viram células vazias iguais para candidatos diferentes)."""
+    raw = json.dumps([VISION_CACHE_VERSION, stage, vision.signature(model), _schema_hash(),
+                      hashlib.sha256(sheet).hexdigest(), prompt, refs or []], ensure_ascii=False)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def description_ref(c: Candidate, frames: list) -> str:
+    """Identidade do que foi visto: bytes (imagem local) ou candidato + URLs dos frames (miniaturas da API)."""
+    if c.provider == "local":
+        return "sha256:" + hashlib.sha256(b"".join(frame_bytes(f) for f in frames)).hexdigest()
+    return "ref:" + hashlib.sha1("|".join([c.key] + [str(f) for f in frames]).encode()).hexdigest()
+
+
+def _render_prompt(ctx: SceneContext, n: int, frames: int) -> str:
+    return VISION_PROMPT.format(
+        topic=ctx.topic or "(unknown)", visual_world=ctx.visual_world or "(real life)", text=ctx.text,
+        meaning=ctx.meaning or ctx.intent, beat=ctx.beat or "(not available)",
+        subject=ctx.subject or ctx.intent, must_show=json.dumps(ctx.must_show, ensure_ascii=False),
+        must_avoid=json.dumps(ctx.must_avoid, ensure_ascii=False), intent=ctx.intent,
+        allowed_styles=", ".join(ctx.allowed_styles), style_reason=ctx.style_reason or "-",
+        previous=ctx.previous or "(none)", context=vision_context(ctx.context), n=n, frames=frames)
+
+
+def _store_descriptions(rows: list[list], cands: list[Candidate], result: list[dict], provider: str) -> None:
+    with session_scope() as s:
+        for row, c, d in zip(rows, cands, result):
+            if d.get("realism") == "unknown":
+                continue
+            content = hashlib.sha256(b"".join(frame_bytes(f) for f in row)).hexdigest()
+            s.merge(AssetDescription(ref=description_ref(c, row), candidate_key=c.key, content_hash=content,
+                                     seen=str(d.get("seen") or "")[:300], realism=str(d.get("realism") or ""),
+                                     brand_or_franchise=bool(d.get("brand_or_franchise")),
+                                     is_timeless=bool(d.get("is_timeless")), provider=provider,
+                                     prompt_version=VISION_CACHE_VERSION))
+        s.commit()
+
+
+def observed_descriptions(cands: list[Candidate], frames_per_candidate: int) -> int:
+    """Preenche c.observed com o que uma IA já viu nesse candidato (outra cena). Devolve quantos tinham."""
+    refs = {description_ref(c, pick_frames(c, frames_per_candidate)[0]): c for c in cands}
+    if not refs:
+        return 0
+    found = 0
+    with session_scope() as s:
+        for d in s.exec(select(AssetDescription).where(AssetDescription.ref.in_(list(refs)))):
+            refs[d.ref].observed = d.seen
+            found += 1
+    return found
 
 
 def _rate(stage: str, rows: list[list], cands: list[Candidate], ctx: SceneContext, model: str,
@@ -83,57 +139,69 @@ def _rate(stage: str, rows: list[list], cands: list[Candidate], ctx: SceneContex
     A nota é recalculada a cada uso, porque depende dos estilos aceitos na cena.
     """
     frames = max((len(r) for r in rows), default=1)
-    key = _cache_key(stage, cands, ctx, model, frames)
-    with session_scope() as s:
-        cached = s.get(VisionCache, key)
-        result = cached.result["candidates"] if cached else None
-    if result is None:
-        prompt = VISION_PROMPT.format(
-            topic=ctx.topic or "(unknown)", visual_world=ctx.visual_world or "(real life)", text=ctx.text,
-            meaning=ctx.meaning or ctx.intent, beat=ctx.beat or "(not available)",
-            subject=ctx.subject or ctx.intent, must_show=json.dumps(ctx.must_show, ensure_ascii=False),
-            must_avoid=json.dumps(ctx.must_avoid, ensure_ascii=False), intent=ctx.intent,
-            allowed_styles=", ".join(ctx.allowed_styles), style_reason=ctx.style_reason or "-",
-            previous=ctx.previous or "(none)", context=vision_context(ctx.context), n=len(rows), frames=frames)
-        timer = stats.get("_timer")
+    prompt = _render_prompt(ctx, len(rows), frames)
+    timer = stats.get("_timer")
+    if timer:
+        with timer.track(stats["_scene"], "folha de miniaturas"):
+            image = build_sheet(rows)
+    else:
+        image = build_sheet(rows)
+    key = vision_cache_key(stage, prompt, image, model, [description_ref(c, r) for c, r in zip(cands, rows)])
+
+    def lookup():
+        with session_scope() as s:
+            cached = s.get(VisionCache, key)
+            return cached.result if cached else None
+
+    def compute():
         if timer:
-            with timer.track(stats["_scene"], "folha de miniaturas"):
-                image = build_sheet(rows)
             with timer.track(stats["_scene"], "chamada de visão"):
                 sheet, cost, provider = vision.rate_sheet(image, prompt, model, schema=VisionSheet,
                                                           budget=stats.get("_budget"), record=stats.get("_record"))
         else:
-            sheet, cost, provider = vision.rate_sheet(build_sheet(rows), prompt, model, schema=VisionSheet,
+            sheet, cost, provider = vision.rate_sheet(image, prompt, model, schema=VisionSheet,
                                                       budget=stats.get("_budget"), record=stats.get("_record"))
         stats.setdefault("vision_providers", {})
         stats["vision_providers"][provider] = stats["vision_providers"].get(provider, 0) + 1
         stats["vision_calls"] = stats.get("vision_calls", 0) + 1
-        if provider != "claude" or not stats.get("_record"):  # Claude com _record já entrou chamada a chamada
+        if provider not in ("claude", "openai") or not stats.get("_record"):  # pagas com _record já entraram
             stats["vision_cost"] = stats.get("vision_cost", 0.0) + cost
         by_row = {c.row: c for c in sheet.candidates}
-        result = []
+        out = []
         for i, row in enumerate(rows, start=1):
             r = by_row.get(i)
             if r is None:
-                result.append({"row": i, "seen": "sem avaliação", "realism": "unknown", "brand_or_franchise": False,
-                               "subject_visible": False, "forbidden_present": [], "context_match": 0, "quality": 0,
-                               "best_frame": 0})
+                out.append({"row": i, "seen": "sem avaliação", "realism": "unknown", "brand_or_franchise": False,
+                            "subject_visible": False, "forbidden_present": [], "context_match": 0, "quality": 0,
+                            "best_frame": 0})
                 continue
             d = r.model_dump()
             d["best_frame"] = min(max(0, int(r.best_frame)), max(0, len(row) - 1))
-            result.append(d)
+            out.append(d)
+        payload = {"candidates": out, "provider": provider, "model_config": vision.signature(model),
+                   "version": VISION_CACHE_VERSION}
         with session_scope() as s:
-            s.merge(VisionCache(key=key, stage=stage, result={"candidates": result}))
+            s.merge(VisionCache(key=key, stage=stage, result=payload))
             s.commit()
+        try:
+            _store_descriptions(rows, cands, out, provider)
+        except Exception as e:  # noqa: BLE001 — a descrição é um extra; nunca derruba a avaliação
+            log.warning("descrição observável não foi salva: %s", e)
+        return payload
+
+    result = [dict(d) for d in singleflight.run(f"vision:{key}", lookup, compute, seconds=180)["candidates"]]
     for d in result:
         d["score"] = (0.0 if d.get("realism") == "unknown"
                       else score_row(d, ctx.allowance, ctx.allowed_styles, ctx.setting_type))
     return result
 
 
-def rate_local_image(path: Path, ctx: SceneContext, model: str, stats: dict, key_hint: str) -> dict:
-    """Valida uma imagem já existente (ex.: gerada pela Darkvi) com o mesmo prompt de visão."""
-    fake = Candidate(provider="local", external_id=key_hint, title="", duration=0, width=0, height=0, page_url="",
+def rate_local_image(path: Path, ctx: SceneContext, model: str, stats: dict, key_hint: str = "") -> dict:
+    """Valida uma imagem já existente (ex.: gerada pela Darkvi) com o mesmo prompt de visão.
+
+    A identidade é o conteúdo do arquivo (key_hint é ignorado; mantido por compatibilidade)."""
+    digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16]
+    fake = Candidate(provider="local", external_id=digest, title="", duration=0, width=0, height=0, page_url="",
                      thumbnail=None, is_image=True)
     return _rate("generated", [[path]], [fake], ctx, model, stats)[0]
 

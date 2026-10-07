@@ -48,7 +48,7 @@ from ..plan import load_bible
 from ..timing import Timings
 from ..visual import (REWRITE_SYSTEM, QueryRewriteBatch, compact_json, image_type_for, sanitize_queries, scene_style,
                       style_of_realism, video_type_for)
-from .funnel import Choice, SceneContext, choose
+from .funnel import Choice, SceneContext, choose, observed_descriptions
 from .prerank import rank, technical_filter
 from .search import cached_search, search_all
 
@@ -275,6 +275,8 @@ class Selector:
                            f"Nenhum candidato de {SOURCE_LABEL[source]} passou no filtro técnico",
                            scene=sid, detail=f"{len(cands)} encontrados; reprovados: {rejected}")
             return None
+        stats["observed_reused"] = stats.get("observed_reused", 0) + observed_descriptions(
+            passed, int(self.cfg["frames_per_candidate"]))
         vocab = (scene.get("context") or {}).get("search_vocabulary") or []
         ranked = rank(passed, queries + ([" ".join(vocab)] if vocab else []), scene.get("visual_intent", ""), dur,
                       int(self.cfg["prerank_keep"]), scene.get("subject", ""), scene.get("must_show") or [])

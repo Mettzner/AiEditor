@@ -33,6 +33,18 @@ def _cached(url: str) -> Path | None:
         return None
 
 
+def frame_bytes(frame: Path | str | None) -> bytes:
+    """Bytes de um frame (caminho local ou URL já baixada para o cache); nunca baixa. Vazio se indisponível."""
+    if isinstance(frame, str):
+        path = _frames_dir / (hashlib.sha1(frame.encode()).hexdigest() + ".jpg")
+    else:
+        path = frame
+    try:
+        return Path(path).read_bytes() if path else b""
+    except OSError:
+        return b""
+
+
 def pick_frames(c: Candidate, n: int) -> tuple[list[str], list[float]]:
     """Escolhe até n frames espaçados (URLs) e suas posições relativas no clipe."""
     urls, pos = c.preview_frames, c.positions()

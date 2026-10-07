@@ -8,37 +8,28 @@ Regras (Fase A do plano de melhorias):
 - Resultado vazio de verdade é cacheado (status "empty"); falha transitória (rede, 5xx) vira status "error" com TTL
   curto (search_error_ttl_seconds) e é relançada para quem consultar nesse intervalo. Falta de cota nunca é
   cacheada: depende do saldo, não da consulta.
-- Single-flight: buscas idênticas ao mesmo tempo fazem UM fetch. Dentro do processo, um lock por chave; entre
-  processos (API e worker), uma concessão (cache_lease) com validade; quem não a obtém espera o resultado no cache.
+- Single-flight (app/singleflight.py): buscas idênticas ao mesmo tempo fazem UM fetch, também entre processos.
 - stats recebe: searches (fetches remotos), cache_hit, cache_miss, cache_empty, cache_error, quota_blocked.
 """
 from __future__ import annotations
 
 import hashlib
-import os
 import threading
-import time
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
-from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
 from ...config import load_settings
-from ...db import engine, session_scope
+from ... import singleflight
+from ...db import session_scope
 from ...models import SearchCache, now
 from ...providers.http import ProviderError
 from ...providers.stock.base import Candidate, candidate_from_dict
 
 _stats_lock = threading.Lock()
-_locks_guard = threading.Lock()
-_key_locks: dict[str, threading.Lock] = {}
-OWNER = f"{os.getpid()}:{uuid.uuid4().hex[:8]}"
-LEASE_SECONDS = 90.0
-WAIT_POLL = 0.25
 DEFAULT_TTL_HOURS = {"default": 168, "pixabay": 168, "pexels": 168, "youtube": 168, "archives": 336}
 
 
@@ -98,28 +89,6 @@ def _read(key: str, provider: str) -> tuple[str, SearchCache | None]:
     return ("error" if row.status == "error" else "hit"), row
 
 
-def _key_lock(key: str) -> threading.Lock:
-    with _locks_guard:
-        lock = _key_locks.get(key)
-        if lock is None:
-            lock = _key_locks[key] = threading.Lock()
-        return lock
-
-
-def _acquire_lease(key: str) -> bool:
-    t = time.time()
-    with engine.begin() as conn:
-        conn.execute(text("DELETE FROM cachelease WHERE key = :k AND expires_at <= :t"), {"k": key, "t": t})
-        res = conn.execute(text("INSERT OR IGNORE INTO cachelease (key, owner, expires_at) VALUES (:k, :o, :e)"),
-                           {"k": key, "o": OWNER, "e": t + LEASE_SECONDS})
-        return res.rowcount == 1
-
-
-def _release_lease(key: str) -> None:
-    with engine.begin() as conn:
-        conn.execute(text("DELETE FROM cachelease WHERE key = :k AND owner = :o"), {"k": key, "o": OWNER})
-
-
 def _store(key: str, provider: str, query: str, results: list[Candidate] | None, status: str,
            error: str | None = None, next_page_token: str | None = None) -> None:
     ttl = timedelta(seconds=_error_ttl()) if status == "error" else timedelta(hours=ttl_hours(provider))
@@ -153,38 +122,31 @@ def cached_fetch(provider: str, kind: str, query: str, per_page: int, lang: str,
                  page: int = 0) -> tuple[list[Candidate], str | None]:
     """Como cached_search, para fetches que também devolvem o token da próxima página."""
     key = cache_key(provider, kind, query, per_page, lang, page)
-    state, row = _read(key, provider)
-    if state != "miss" and row is not None:
-        return _serve(state, row, stats), row.next_page_token
-    with _key_lock(key):  # single-flight entre as threads deste processo
-        state, row = _read(key, provider)
-        if state != "miss" and row is not None:
-            return _serve(state, row, stats), row.next_page_token
-        while not _acquire_lease(key):  # outro processo está buscando: espera o resultado (ou a concessão vencer)
-            time.sleep(WAIT_POLL)
-            state, row = _read(key, provider)
-            if state != "miss" and row is not None:
-                return _serve(state, row, stats), row.next_page_token
-        try:
-            state, row = _read(key, provider)  # pode ter chegado entre a espera e a concessão
-            if state != "miss" and row is not None:
-                return _serve(state, row, stats), row.next_page_token
-            _bump(stats, "cache_miss")
-            try:
-                results, next_token = fetch()
-            except ProviderError as e:
-                from ...providers.youtube.client import CredentialError, QuotaExhausted
 
-                if isinstance(e, QuotaExhausted):
-                    _bump(stats, "quota_blocked")
-                elif not isinstance(e, CredentialError):  # credencial não é transitória: não cacheia
-                    _store(key, provider, query, None, "error", str(e)[:300])
-                raise
-            _bump(stats, "searches")
-            _store(key, provider, query, results, "ok" if results else "empty", next_page_token=next_token)
-            return results, next_token
-        finally:
-            _release_lease(key)
+    def lookup():
+        state, row = _read(key, provider)
+        return (state, row) if state != "miss" and row is not None else None
+
+    def compute():
+        _bump(stats, "cache_miss")
+        try:
+            results, next_token = fetch()
+        except ProviderError as e:
+            from ...providers.youtube.client import CredentialError, QuotaExhausted
+
+            if isinstance(e, QuotaExhausted):
+                _bump(stats, "quota_blocked")
+            elif not isinstance(e, CredentialError):  # credencial não é transitória: não cacheia
+                _store(key, provider, query, None, "error", str(e)[:300])
+            raise
+        _bump(stats, "searches")
+        _store(key, provider, query, results, "ok" if results else "empty", next_page_token=next_token)
+        return ("fresh", (results, next_token))
+
+    state, value = singleflight.run(f"search:{key}", lookup, compute)
+    if state == "fresh":
+        return value
+    return _serve(state, value, stats), value.next_page_token
 
 
 def cached_search(provider: str, kind: str, query: str, per_page: int, lang: str,
@@ -204,8 +166,7 @@ def purge_expired(grace_hours: float = 0) -> int:
                 s.delete(row)
                 removed += 1
         s.commit()
-    with engine.begin() as conn:
-        conn.execute(text("DELETE FROM cachelease WHERE expires_at <= :t"), {"t": time.time()})
+    singleflight.purge()
     return removed
 
 

@@ -51,6 +51,18 @@ def available() -> bool:
     return gemini_usable() or paid_available()
 
 
+def signature(gemini_model: str) -> str:
+    """Quem pode responder uma avaliação (modo + modelos configurados). Entra na chave do cache de visão: trocar de
+    modelo invalida as notas; o provedor que de fato respondeu fica registrado junto do resultado."""
+    from .base import get_llm
+
+    try:
+        claude_model = get_llm("vision")[1]["model"]
+    except Exception:  # noqa: BLE001
+        claude_model = "?"
+    return "|".join([_mode(), f"gemini={gemini_model}", f"openai={openai_vision.model()}", f"claude={claude_model}"])
+
+
 class VisionBudgetExceeded(ProviderError):
     """O teto de gasto da produção não comporta mais uma avaliação paga."""
 
