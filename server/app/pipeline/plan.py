@@ -27,6 +27,7 @@ from ..worker.context import JobContext
 from .allocate import allocate
 from .context import (ContextBible, beat_for_unit, block_by_id, block_for_unit, finish_bible, neutral_bible,
                       period_allowed_styles, scene_context, strategy_order, video_look)
+from .pacing import max_scene_seconds, pace
 from .visual import (MEDIA_STYLE_RULES, NUMBER_HINTS, PLAN_SYSTEM, Style, StyleAllowance, brief_section,
                      sanitize_free_query, sanitize_queries, scene_style)
 
@@ -259,8 +260,11 @@ def plan_context(ctx: JobContext, units: list[dict]) -> str:
     settings = "\n".join([
         "PRODUCTION SETTINGS",
         f"- Title: {ctx.config.title}",
-        f"- Target average scene duration: {ctx.config.avg_scene_seconds:.1f}s, varying ±{var:.0%}.",
-        f"- Video language: {lang_name(lang)} ({lang}). Number format: {NUMBER_HINTS.get(lang, '').strip()}",
+        f"- Target average scene duration: {ctx.config.avg_scene_seconds:.1f}s, varying ±{var:.0%}. Hard maximum: "
+        f"{max_scene_seconds(ctx.config.avg_scene_seconds):.1f}s per scene (longer scenes are split into extra "
+        "shots automatically, so prefer scenes close to the average).",
+        f"- Video language: {lang_name(lang)} ({lang}). Number format: "
+        f"{NUMBER_HINTS.get(lang, f'the usual {lang_name(lang)} number, unit and date conventions').strip()}",
         f"- Channel media style: {MEDIA_STYLE_RULES.get(ctx.config.media_style, MEDIA_STYLE_RULES['real_preferred'])}",
         "- Visual style and period look: decided by the CONTEXT BIBLE from the script itself.",
         "- Direction:",
@@ -370,6 +374,8 @@ def run(ctx: JobContext) -> str:
     for a, b in zip(scenes, scenes[1:]):
         a["end"] = b["start"]
     scenes[-1]["end"] = round(duration, 3)
+    # tempo em tela perto da média e nunca acima do teto: fragmentos juntados, cenas longas viram tomadas
+    scenes = pace(scenes, transcript["words"], avg)
 
     allocation = allocate(scenes, ctx.config)
     for s in scenes:
