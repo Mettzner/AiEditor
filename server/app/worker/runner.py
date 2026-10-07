@@ -83,6 +83,11 @@ def run_production(production_id: int, render_lock: threading.Semaphore) -> None
         done_steps = {r.step for r in s.exec(select(ProductionStep).where(
             ProductionStep.production_id == production_id, ProductionStep.status.in_(["done", "skipped"])))}
 
+    from ..budget import release_stale
+
+    stale = release_stale(production_id)  # reservas abertas de uma execução que morreu não seguram o teto
+    if stale:
+        log.info("produção %s: %d reserva(s) de custo órfã(s) liberada(s)", production_id, stale)
     config = ProductionConfig.model_validate(production.config)
     weights = step_weights(config)
     ctx = JobContext(production, weights, render_lock)

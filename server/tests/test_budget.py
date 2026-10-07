@@ -3,6 +3,7 @@ no custo da produção (antes só o total do Gemini era registrado, no fim da et
 from types import SimpleNamespace
 
 import pytest
+from sqlmodel import select
 
 from app import budget as budget_mod
 from app.budget import VisionBudget
@@ -137,3 +138,114 @@ def test_resposta_da_openai_vira_avaliacao_e_custo(monkeypatch):
     assert sent["model"] == "gpt-4.1-mini"
     assert sent["messages"][1]["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
     assert abs(usage.cost - (2000 * 0.40 + 500 * 1.60) / 1e6) < 1e-9
+
+
+# ---------------------------------------------------------------- Ledger: reserva antes, reconciliação depois (A6)
+def _production(cost: float = 0.0) -> int:
+    from app.db import session_scope
+    from app.models import Production
+
+    with session_scope() as s:
+        p = Production(title="t", script="x", config={}, status="running", cost_actual=cost)
+        s.add(p)
+        s.commit()
+        s.refresh(p)
+        return p.id
+
+
+class _Ctx:
+    def __init__(self, pid):
+        self.production_id = pid
+        self.recorded = []
+
+    def record_llm(self, usage, step=None):
+        from app.db import session_scope
+        from app.models import Production
+
+        self.recorded.append(usage)
+        with session_scope() as s:
+            p = s.get(Production, self.production_id)
+            p.cost_actual += usage.cost
+            s.add(p)
+            s.commit()
+
+
+def test_teto_impede_despesa_sem_chamar():
+    from app.budget import BudgetExceeded, Ledger, paid_llm
+
+    pid = _production(cost=0.95)
+    Ledger.for_production(pid, limit=1.0)
+    ctx, called = _Ctx(pid), []
+    with pytest.raises(BudgetExceeded):
+        paid_llm(ctx, "plan", lambda: called.append(1), estimate=0.10)
+    assert not called and not ctx.recorded
+
+
+def test_reserva_aberta_conta_no_teto_e_reconcilia_com_o_real():
+    from app.budget import BudgetExceeded, Ledger, ledger_summary
+    from app.db import session_scope
+    from app.models import CostEntry
+
+    pid = _production()
+    led = Ledger.for_production(pid, limit=1.0)
+    first = led.reserve("bible", 0.7)
+    with pytest.raises(BudgetExceeded):  # 0,7 reservado + 0,4 > 1,0 mesmo sem custo registrado ainda
+        led.reserve("plan", 0.4)
+    first.settle(0.05)  # o real foi bem menor: libera a diferença
+    second = led.reserve("plan", 0.4)
+    second.settle(None)  # não aconteceu
+    with session_scope() as s:
+        rows = {r.id: r for r in s.exec(select(CostEntry).where(CostEntry.production_id == pid))}
+    assert rows[first.entry_id].status == "settled" and rows[first.entry_id].actual_usd == 0.05
+    assert rows[second.entry_id].status == "released"
+    assert ledger_summary(pid)["bible"]["settled"] == 1
+
+
+def test_falha_cobrada_entra_no_custo_e_fecha_a_reserva():
+    from app.budget import Ledger, paid_llm
+    from app.providers.llm.base import LLMUsage
+
+    pid = _production()
+    Ledger.for_production(pid, limit=5.0)
+    ctx = _Ctx(pid)
+
+    class Cut(Exception):
+        usage = LLMUsage(cost=0.02, model="claude-sonnet-5-5")
+
+    def boom():
+        raise Cut()
+
+    with pytest.raises(Cut):
+        paid_llm(ctx, "plan", boom, estimate=0.3)
+    assert [u.cost for u in ctx.recorded] == [0.02]
+    assert not Ledger.for_production(pid).open
+
+
+def test_reservas_orfas_sao_liberadas_na_retomada():
+    from app.budget import Ledger, release_stale
+
+    pid = _production()
+    Ledger.for_production(pid, limit=1.0).reserve("bible", 0.9)  # processo "morreu" com a reserva aberta
+    assert release_stale(pid) == 1
+    assert Ledger.for_production(pid, limit=1.0).reserve("bible", 0.9)
+
+
+def test_preco_desconhecido_fica_explicito():
+    from app.providers.llm.anthropic import canonical_model, price_info
+
+    prices, known = price_info("claude-modelo-novo-9")
+    assert not known and prices == max(price_info(m)[0] for m in ("claude-opus-5-5", "claude-sonnet-5-5"))
+    assert price_info("claude-haiku-4-5")[1]
+    assert canonical_model("claude-haiku-4-5-20251001", "claude-haiku-4-5") == "claude-haiku-4-5"
+
+
+def test_estimativa_tem_faixa_tarefas_e_hipoteses():
+    from app.estimate import estimate
+    from app.models import Preset, ProductionConfig
+
+    cfg = ProductionConfig(**Preset(real_pct=80).model_dump(), title="t", channel_name="c")
+    cost = estimate(cfg, "palavra " * 3000)["cost"]
+    assert cost["range"]["low"] <= cost["total"] <= cost["range"]["high"]
+    assert {"bible", "plan", "rewrite", "overlay"} <= set(cost["by_task"])
+    assert cost["by_task"]["plan"]["calls"][0] >= 4  # 45 unidades por janela
+    assert cost["assumptions"] and cost["currency"] == "USD" and cost["prices_as_of"]

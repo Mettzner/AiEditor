@@ -500,11 +500,32 @@ IA   ${fmtDuration(preview.ai)}  →  ${aiLabel}`}
                       <dd className="text-right">{fmtMoney(estimate.cost.ai)}</dd>
                       <dt>Música</dt>
                       <dd className="text-right">{fmtMoney(estimate.cost.music)}</dd>
-                      <dt className="text-foreground">Total</dt>
-                      <dd className="text-right text-foreground">{fmtMoney(estimate.cost.total)}</dd>
+                      <dt>Visão paga (pior caso)</dt>
+                      <dd className="text-right">até {fmtMoney(estimate.cost.vision_high)}</dd>
+                      <dt className="text-foreground">Faixa</dt>
+                      <dd className="text-right text-foreground">
+                        {fmtMoney(estimate.cost.range.low)} – {fmtMoney(estimate.cost.range.high)}
+                      </dd>
                       <dt>Tempo</dt>
                       <dd className="text-right">≈ {estimate.time_minutes} min</dd>
                     </dl>
+                    <details className="mt-2 text-xs text-muted-foreground">
+                      <summary className="cursor-pointer">Como foi calculado</summary>
+                      <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                        {estimate.cost.assumptions.map((a) => (
+                          <li key={a}>{a}</li>
+                        ))}
+                        <li>
+                          Preços em {estimate.cost.currency} conferidos em {estimate.cost.prices_as_of}; edite em
+                          Configuração se mudarem.
+                        </li>
+                      </ul>
+                      {estimate.cost.unknown_prices.length > 0 && (
+                        <p className="mt-1 text-amber-300">
+                          Sem preço cadastrado: {estimate.cost.unknown_prices.join(", ")} (estimado pelo mais caro).
+                        </p>
+                      )}
+                    </details>
                   </div>
                   <div className="rounded-md border p-4">
                     <p className="mb-2 font-medium">Uso de cotas</p>
@@ -524,7 +545,10 @@ IA   ${fmtDuration(preview.ai)}  →  ${aiLabel}`}
                         {estimate.quotas.youtube_scenes_fit} de {estimate.quotas.youtube_scenes} cabem hoje
                       </dd>
                       <dt>Cota YouTube restante</dt>
-                      <dd className="text-right">{estimate.quotas.youtube_available} un.</dd>
+                      <dd className="text-right">
+                        {estimate.quotas.youtube_available}{" "}
+                        {estimate.quotas.youtube_quota_unit === "calls" ? "buscas" : "un."}
+                      </dd>
                     </dl>
                     {estimate.quotas.youtube_scenes_fit < estimate.quotas.youtube_scenes && (
                       <p className="mt-2 text-xs text-amber-300">

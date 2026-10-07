@@ -80,6 +80,25 @@ class ProviderPrice(SQLModel, table=True):
     unit: str  # ex.: "per_1m_input_tokens", "per_image", "per_second_video"
     price: float
     note: Optional[str] = None
+    currency: str = "USD"
+    as_of: Optional[str] = None  # data em que o valor foi conferido (AAAA-MM-DD); None = não conferido
+    regime: str = "standard"  # standard | batch | plan (incluso no plano)
+
+
+class CostEntry(SQLModel, table=True):
+    """Reserva/consumo de uma chamada paga (budget.Ledger): reservada antes, fechada com o custo real depois."""
+
+    id: str = Field(primary_key=True)
+    production_id: int = Field(index=True)
+    task: str
+    provider: str = ""
+    model: str = ""
+    status: str = "reserved"  # reserved | settled | released
+    estimated_usd: float = 0.0
+    actual_usd: Optional[float] = None
+    price_known: bool = True
+    created_at: datetime = Field(default_factory=now)
+    settled_at: Optional[datetime] = None
 
 
 class SearchCache(SQLModel, table=True):

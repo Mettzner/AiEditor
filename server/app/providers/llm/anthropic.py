@@ -31,16 +31,37 @@ PROMPT_VERSION = "v2"  # mude ao alterar prompts: invalida o cache local de resp
 BATCH_POLL_SECONDS = 30
 
 
-def _prices(model: str) -> tuple[float, float, float, float]:
-    """(entrada, saída, gravação de cache, leitura de cache) por milhão de tokens, editáveis na Configuração."""
+def price_info(model: str) -> tuple[tuple[float, float, float, float], bool]:
+    """((entrada, saída, gravação de cache, leitura de cache) por milhão de tokens, preço conhecido?).
+
+    Modelo sem preço cadastrado (ex.: fallback do servidor para um modelo novo) usa o preço do modelo mais caro
+    conhecido — estimativa conservadora — e devolve conhecido=False, para o custo aparecer como estimado."""
     from ...db import session_scope
     from ...models import CLAUDE_PRICES, ProviderPrice
 
     with session_scope() as s:
         rows = s.exec(select(ProviderPrice).where(ProviderPrice.provider == f"claude:{model}")).all()
     price = {r.unit: r.price for r in rows}
-    default = CLAUDE_PRICES.get(model, CLAUDE_PRICES["claude-sonnet-5-5"])
-    return tuple(price.get(u, d) for u, d in zip(("input", "output", "cache_write", "cache_read"), default))  # type: ignore[return-value]
+    known = model in CLAUDE_PRICES or bool(price)
+    default = CLAUDE_PRICES.get(model) or max(CLAUDE_PRICES.values(), key=lambda p: p[1])
+    units = ("input", "output", "cache_write", "cache_read")
+    return tuple(price.get(u, d) for u, d in zip(units, default)), known  # type: ignore[return-value]
+
+
+def canonical_model(answered: str | None, requested: str) -> str:
+    """Id cadastrado do modelo que respondeu ("claude-haiku-4-5-20251001" → "claude-haiku-4-5")."""
+    from ...models import CLAUDE_PRICES
+
+    if not answered:
+        return requested
+    if answered in CLAUDE_PRICES:
+        return answered
+    match = max((k for k in CLAUDE_PRICES if answered.startswith(k)), key=len, default=None)
+    return match or answered
+
+
+def _prices(model: str) -> tuple[float, float, float, float]:
+    return price_info(model)[0]
 
 
 def _usage_from(resp, model: str, task: str, seconds: float, batch: bool = False) -> LLMUsage:
@@ -50,7 +71,10 @@ def _usage_from(resp, model: str, task: str, seconds: float, batch: bool = False
         cache_creation_input_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0,
         cache_read_input_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
         seconds=round(seconds, 2), model=model, task=task, batch=batch)
-    p_in, p_out, p_cw, p_cr = _prices(model)
+    answered = canonical_model(getattr(resp, "model", None) if isinstance(getattr(resp, "model", None), str)
+                               else None, model)
+    (p_in, p_out, p_cw, p_cr), usage.price_known = price_info(answered)
+    usage.model = answered  # modelo que de fato respondeu (inclui fallback do servidor)
     usage.cost = (usage.input_tokens * p_in + usage.output_tokens * p_out
                   + usage.cache_creation_input_tokens * p_cw + usage.cache_read_input_tokens * p_cr) / 1e6
     if batch:

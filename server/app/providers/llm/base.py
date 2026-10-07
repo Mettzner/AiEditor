@@ -21,6 +21,7 @@ class LLMUsage:
     task: str = ""
     local_cache: bool = False  # resposta reaproveitada do cache local (custo zero)
     batch: bool = False
+    price_known: bool = True  # False: modelo sem preço cadastrado, custo estimado pelo mais caro conhecido
 
     def to_dict(self) -> dict:
         return {k: (round(v, 6) if isinstance(v, float) else v) for k, v in asdict(self).items()}
@@ -60,6 +61,20 @@ def call_llm(task: str, *, system: str, user: str, schema: type[T], context: str
     return llm.structured(model=cfg["model"], system=system, user=user, schema=schema, effort=cfg.get("effort"),
                           max_tokens=max_tokens, context=context, task=task, thinking=cfg.get("thinking", "adaptive"),
                           batch=batch, cache_ttl=cfg.get("cache_ttl", "5m"), images=images)
+
+
+def estimate_cost(task: str, *, system: str = "", user: str = "", context: str | list[str] | None = None,
+                  max_tokens: int = 8000, images: int = 0) -> float:
+    """Teto da chamada em US$ para reservar no orçamento: entrada ≈ 1 token a cada 3,2 caracteres (sistema e
+    contexto ao preço de gravação de cache, o caso mais caro), imagem ≈ 1.600 tokens, saída = max_tokens."""
+    from .anthropic import price_info
+
+    _, cfg = get_llm(task)
+    (p_in, p_out, p_cw, _), _known = price_info(cfg["model"])
+    ctx_chars = sum(len(c or "") for c in ([context] if isinstance(context, str) else context or []))
+    cached = (len(system) + ctx_chars) / 3.2
+    fresh = len(user) / 3.2 + images * 1600
+    return (cached * max(p_cw, p_in) + fresh * p_in + max_tokens * p_out) / 1e6
 
 
 def failed_usage(error: BaseException) -> LLMUsage | None:

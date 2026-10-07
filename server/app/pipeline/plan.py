@@ -22,7 +22,8 @@ from pydantic import BaseModel
 
 from ..directions import get_direction
 from ..lang import name as lang_name
-from ..providers.llm.base import call_llm, failed_usage
+from ..budget import BudgetExceeded, paid_llm
+from ..providers.llm.base import call_llm, estimate_cost
 from ..worker.context import JobContext
 from .allocate import allocate
 from .context import (ContextBible, beat_for_unit, block_by_id, block_for_unit, finish_bible, neutral_bible,
@@ -235,13 +236,16 @@ def write_bible(ctx: JobContext, context: str, units: list[dict], economy: bool 
             if economy:
                 ctx.progress(0.05, "Aguardando IA (lote econômico, até 24 h)")
             # etapa própria ("bible"): a interpretação do roteiro inteiro merece mais raciocínio que as cenas
-            parsed, usage = call_llm("bible", system=PLAN_SYSTEM, context=context, user=user, schema=ContextBible,
-                                     max_tokens=16000, batch=economy)
-            ctx.record_llm(usage)
+            parsed, usage = paid_llm(ctx, "bible", lambda: call_llm(
+                "bible", system=PLAN_SYSTEM, context=context, user=user, schema=ContextBible, max_tokens=16000,
+                batch=economy), estimate_cost("bible", system=PLAN_SYSTEM, context=context, user=user,
+                                              max_tokens=16000))
             return finish_bible(parsed.model_dump(), len(units), units)
+        except BudgetExceeded as e:
+            ctx.issue("BUDGET_EXCEEDED", "Teto de gasto: a Bíblia de Contexto não foi gerada; usando um contexto "
+                      "atemporal neutro", detail=str(e))
+            break
         except Exception as e:  # noqa: BLE001
-            if (paid := failed_usage(e)) is not None:
-                ctx.record_llm(paid)
             if attempt == 1:
                 ctx.issue("STEP_FAILED", "Bíblia de Contexto falhou; usando um contexto atemporal neutro",
                           detail=repr(e), severity="warning")
@@ -296,14 +300,17 @@ def run(ctx: JobContext) -> str:
                     ctx.progress(0.3, "Aguardando IA (lote econômico, até 24 h)")
                 # a bíblia (~5–10 mil tokens, igual em todas as janelas) é um 2º bloco em cache: gravada uma vez e
                 # lida a 10% do preço, em vez de entrar inteira e sem cache no pedido de cada janela
-                parsed, usage = call_llm("plan", system=PLAN_SYSTEM, context=[context, brief], user=user,
-                                         schema=PlanWindow, max_tokens=PLAN_MAX_TOKENS, batch=economy)
-                ctx.record_llm(usage)
+                parsed, usage = paid_llm(ctx, "plan", lambda: call_llm(
+                    "plan", system=PLAN_SYSTEM, context=[context, brief], user=user, schema=PlanWindow,
+                    max_tokens=PLAN_MAX_TOKENS, batch=economy),
+                    estimate_cost("plan", system=PLAN_SYSTEM, context=[context, brief], user=user,
+                                  max_tokens=PLAN_MAX_TOKENS))
                 return _validate(parsed, win[0]["i"], win[-1]["i"], media_style, bible)
+            except BudgetExceeded as e:
+                err = e
+                break
             except Exception as e:  # noqa: BLE001
                 err = e
-                if (paid := failed_usage(e)) is not None:
-                    ctx.record_llm(paid)
                 if getattr(e, "truncated", False):
                     # o mesmo pedido seria cortado de novo (e cobrado de novo): metade das unidades por chamada
                     if len(win) < 2 * MIN_SPLIT_UNITS:

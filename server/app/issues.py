@@ -20,6 +20,7 @@ CATALOG: dict[str, tuple[str, str]] = {
     "OVERLAY_LANGUAGE_FIXED": ("info", "Texto de overlay estava em outro idioma e foi corrigido"),
     "COMPOSITION_DEVIATION": ("warning", "Composição final desviou mais de 5% da meta"),
     "PROVIDER_QUOTA": ("warning", "Cota ou rate limit de provedor"),
+    "BUDGET_EXCEEDED": ("warning", "Teto de gasto da produção impediu uma chamada paga (a produção continua)"),
     "PROVIDER_AUTH": ("warning", "Provedor recusou a credencial (não é falta de cota)"),
     "AI_GEN_FAILED": ("warning", "Geração de IA falhou na cena"),
     "IMAGE_QUOTA_EXHAUSTED": ("warning", "Saldo diário da Darkvi acabou"),

@@ -22,8 +22,9 @@ from .report import write_report, write_visual_report
 def fix_overlay_language(ctx: JobContext, overlays: list[dict], scenes: list[dict]) -> list[dict]:
     """Nenhum texto na tela em idioma diferente do vídeo (§11.4): todos os textos errados são corrigidos numa
     única chamada barata (Haiku); o que continuar errado é descartado."""
+    from ..budget import paid_llm
     from ..lang import is_mismatch, name
-    from ..providers.llm.base import call_llm, failed_usage
+    from ..providers.llm.base import call_llm, estimate_cost
     from .visual import OVERLAY_FIX_SYSTEM, OverlayFixBatch, compact_json
 
     lang = ctx.config.lang
@@ -39,14 +40,13 @@ def fix_overlay_language(ctx: JobContext, overlays: list[dict], scenes: list[dic
     fixed: dict[int, str] = {}
     err = None
     try:
-        out, usage = call_llm("overlay", system=OVERLAY_FIX_SYSTEM, user=compact_json(payload), schema=OverlayFixBatch,
-                              max_tokens=60 + 40 * len(wrong))
-        ctx.record_llm(usage, step="direct")
+        user, max_tokens = compact_json(payload), 60 + 40 * len(wrong)
+        out, usage = paid_llm(ctx, "overlay", lambda: call_llm(
+            "overlay", system=OVERLAY_FIX_SYSTEM, user=user, schema=OverlayFixBatch, max_tokens=max_tokens),
+            estimate_cost("overlay", system=OVERLAY_FIX_SYSTEM, user=user, max_tokens=max_tokens), step="direct")
         fixed = {it.index: it.text.strip()[:60] for it in out.items}
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 — inclui BudgetExceeded: o texto fica como está, com aviso
         err = repr(e)
-        if (paid := failed_usage(e)) is not None:
-            ctx.record_llm(paid, step="direct")
     kept = []
     for i, o in enumerate(overlays):
         if i not in wrong:

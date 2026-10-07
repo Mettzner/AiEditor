@@ -36,14 +36,14 @@ from ...providers.darkvi.client import DarkviError
 from ...providers.http import ProviderError, download
 from ...providers.llm import gemini
 from ...providers.llm import vision as vision_ai
-from ...providers.llm.base import call_llm, failed_usage
+from ...providers.llm.base import call_llm, estimate_cost
 from ...providers.stock import enabled_providers
 from ...providers.stock.archives import ARCHIVES
 from ...providers.youtube import client as youtube
 from ...worker.context import JobContext, StepError
 from ..allocate import youtube_first
 from ..context import HISTORICAL, STRATEGY_LABEL, is_historical, scene_anachronisms, strategy_order, video_look
-from ...budget import VisionBudget
+from ...budget import BudgetExceeded, VisionBudget, paid_llm
 from ..plan import load_bible
 from ..timing import Timings
 from ..validation import REVIEW_REQUIRED, classify, comparable_score
@@ -154,6 +154,14 @@ class Selector:
         self.ctx.issue("VISION_BUDGET", f"Teto de US$ {self.budget.limit:.2f} por produção: a avaliação paga parou e "
                        "o restante das cenas foi escolhido pelo ranking de texto (a produção continua)",
                        detail=f"{self.budget.calls} avaliações pagas, US$ {self.budget.spent:.2f}")
+
+    def note_budget(self, detail: str) -> None:
+        with self.lock:
+            if getattr(self, "_budget_llm_reported", False):
+                return
+            self._budget_llm_reported = True
+        self.ctx.issue("BUDGET_EXCEEDED", "Teto de gasto da produção: a reescrita de buscas não foi feita",
+                       detail=detail)
 
     def save(self) -> None:
         with self.lock:
@@ -312,14 +320,16 @@ class Selector:
                 "must_avoid": must_avoid, "queries_used": queries, "seen_in_rejected": seen,
             }.items() if v not in (None, [], "")})
         try:
+            user, max_tokens = compact_json(payload), 150 + 120 * len(items)
             with self.timer.track("_global", "reescrita de queries (lote)"):
-                out, usage = call_llm("rewrite", system=REWRITE_SYSTEM, user=compact_json(payload),
-                                      schema=QueryRewriteBatch, max_tokens=150 + 120 * len(items))
-            self.ctx.record_llm(usage, step="select")
+                out, usage = paid_llm(self.ctx, "rewrite", lambda: call_llm(
+                    "rewrite", system=REWRITE_SYSTEM, user=user, schema=QueryRewriteBatch, max_tokens=max_tokens),
+                    estimate_cost("rewrite", system=REWRITE_SYSTEM, user=user, max_tokens=max_tokens), step="select")
+        except BudgetExceeded as e:
+            self.note_budget(str(e))
+            return {}
         except Exception as e:  # noqa: BLE001
             log.warning("reescrita de queries em lote falhou: %s", e)
-            if (paid := failed_usage(e)) is not None:
-                self.ctx.record_llm(paid, step="select")
             return {}
         by_id = {it.scene_id: it for it in out.items}
         result = {}

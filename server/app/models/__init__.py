@@ -1,7 +1,7 @@
 from sqlmodel import select
 
 from .preset import CREATION_FIELDS, MusicConfig, Preset, ProductionConfig, SubtitleStyle
-from .tables import (AssetDescription, CacheLease, Channel, Issue, LlmCache, Production, ProductionStep, ProviderPrice, QuotaUsage,
+from .tables import (AssetDescription, CacheLease, Channel, CostEntry, Issue, LlmCache, Production, ProductionStep, ProviderPrice, QuotaUsage,
                      SearchCache, UsedAsset, VisionCache, YtQuota, now)
 
 # Valores de partida, editáveis na Configuração. Confira os preços atuais de cada provedor.
@@ -11,6 +11,7 @@ CLAUDE_PRICES = {
     "claude-sonnet-5-5": (2.00, 10.00, 2.50, 0.20),
     "claude-haiku-4-5": (1.00, 5.00, 1.25, 0.10),
 }
+PRICES_AS_OF = "2026-10-06"  # valores de partida conferidos nesta data; edite na Configuração quando mudarem
 DEFAULT_PRICES = [
     *[(f"claude:{m}", unit, price, "por 1M tokens")
       for m, prices in CLAUDE_PRICES.items()
@@ -31,11 +32,14 @@ def seed_defaults() -> None:
         existing = {(p.provider, p.unit) for p in s.exec(select(ProviderPrice))}
         for provider, unit, price, note in DEFAULT_PRICES:
             if (provider, unit) not in existing:
-                s.add(ProviderPrice(provider=provider, unit=unit, price=price, note=note))
+                regime = "plan" if note == "incluso no plano" else "standard"
+                s.add(ProviderPrice(provider=provider, unit=unit, price=price, note=note, currency="USD",
+                                    as_of=PRICES_AS_OF, regime=regime))
         s.commit()
 
 
 __all__ = [
+    "CostEntry",
     "AssetDescription",
     "CacheLease",
     "QuotaUsage",

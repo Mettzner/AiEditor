@@ -73,9 +73,20 @@ def _m002_quota_buckets_and_cache_status(conn: Connection) -> None:
                           "ex": bool(exhausted) and bucket == "search"})
 
 
+def _m003_price_metadata(conn: Connection) -> None:
+    """Preço com moeda, data de conferência e regime. Preços antigos ficam sem data (= não conferidos)."""
+    if "providerprice" not in _tables(conn):
+        return
+    add_column(conn, "providerprice", "currency", "VARCHAR DEFAULT 'USD' NOT NULL")
+    add_column(conn, "providerprice", "as_of", "VARCHAR")
+    add_column(conn, "providerprice", "regime", "VARCHAR DEFAULT 'standard' NOT NULL")
+    conn.execute(text("UPDATE providerprice SET regime = 'plan' WHERE note = 'incluso no plano'"))
+
+
 MIGRATIONS: list[tuple[int, str, Callable[[Connection], None]]] = [
     (1, "baseline 1.0.0", _m001_baseline),
     (2, "cota do YouTube por bucket e status do cache de busca", _m002_quota_buckets_and_cache_status),
+    (3, "preços com moeda, data e regime", _m003_price_metadata),
 ]
 
 

@@ -227,7 +227,21 @@ export interface Estimate {
   scenes: number;
   seconds: { ai: number; youtube: number; stock: number };
   ai_media: AiMedia;
-  cost: { tts: number; llm: number; ai: number; music: number; total: number };
+  cost: {
+    tts: number;
+    llm: number;
+    ai: number;
+    music: number;
+    total: number;
+    vision_high: number;
+    range: { low: number; high: number };
+    by_task: Record<string, { model: string; calls: [number, number]; low: number; high: number; price_known: boolean }>;
+    assumptions: string[];
+    unknown_prices: string[];
+    currency: string;
+    prices_as_of: string;
+    vision_sheets: [number, number];
+  };
   quotas: {
     darkvi_images_needed: number;
     darkvi_remaining: number | null;
@@ -239,6 +253,8 @@ export interface Estimate {
     youtube_units_needed: number;
     youtube_available: number;
     youtube_daily_quota: number;
+    youtube_quota_unit: "calls" | "units";
+    youtube_quota_mode: "separate_buckets" | "legacy_units";
   };
   time_minutes: number;
 }
