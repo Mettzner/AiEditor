@@ -7,3 +7,10 @@ os.environ["AIEDITOR_DATA"] = tempfile.mkdtemp(prefix="aieditor_tests_")
 from app.db import init_db  # noqa: E402  (depois de apontar AIEDITOR_DATA para a pasta temporária)
 
 init_db()
+
+if os.environ.get("AIEDITOR_LIVE") != "1":
+    from app.config import update_settings  # noqa: E402
+
+    # a chave da Anthropic do Credential Manager fica visível aos testes: sem isto, a visão reserva (Claude)
+    # faria chamadas reais. Testes da reserva ligam o Claude com chave e chamada simuladas.
+    update_settings({"vision": {"provider": "gemini"}})
