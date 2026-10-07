@@ -29,12 +29,15 @@ import { cn } from "@/lib/utils";
 
 const STEPS = ["Conteúdo", "Direção", "Composição e ritmo", "Resumo"];
 const WPM = 150; // só para a estimativa na tela; o servidor usa o idioma detectado no roteiro
+/** Teto de tempo em tela por clipe (o mesmo de server/app/pipeline/pacing.py). */
+const maxScene = (avg: number) => Math.round(avg * 1.5 * 100) / 100;
 
 /**
  * Escolhas da Criação; vêm pré-preenchidas com o padrão salvo do canal. Idioma, buscas, estilo visual e época não
  * aparecem aqui: o sistema interpreta tudo a partir do roteiro.
  */
 interface Choices {
+  video_language: string | null;
   direction: string;
   real_pct: number;
   ai_media: "both" | "video" | "image";
@@ -56,6 +59,7 @@ interface Choices {
 function fromChannel(c: Channel): Choices {
   const p = c.preset;
   return {
+    video_language: p.default_video_language ?? null, // padrão salvo do canal; sem ele, o detectado no roteiro
     direction: p.direction,
     real_pct: p.real_pct,
     ai_media: p.ai_media,
@@ -87,25 +91,50 @@ export default function CriacaoPage() {
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioSeconds, setAudioSeconds] = useState<number | null>(null);
   const [c, setChoices] = useState<Choices | null>(null);
-  const [saveDefault, setSaveDefault] = useState(false);
+  const [languages, setLanguages] = useState<{ value: string; label: string }[]>([]);
+  const [detected, setDetected] = useState<string | null>(null);
+  const [langTouched, setLangTouched] = useState(false);
+  const [saveDefault, setSaveDefault] = useState(true); // o canal já tem pré-definições: mantê-las é o padrão
   const [estimate, setEstimate] = useState<Estimate | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    Promise.all([api.channels(), api.directions()])
-      .then(([cs, ds]) => {
+    Promise.all([api.channels(), api.directions(), api.languages()])
+      .then(([cs, ds, ls]) => {
         setChannels(cs);
         setDirections(ds);
-        if (cs.length === 1) pickChannel(cs[0]);
+        setLanguages(ls);
+        if (cs.length === 1) {
+          setChannelId(cs[0].id);
+          setChoices(fromChannel(cs[0]));
+        }
       })
       .catch((e) => toast.error(`Backend indisponível: ${(e as Error).message}`));
   }, []);
 
   const channel = channels.find((x) => x.id === channelId) ?? null;
 
+  // idioma do roteiro, detectado enquanto o texto é digitado; pré-preenche o idioma do vídeo até a pessoa escolher
+  useEffect(() => {
+    if (script.trim().split(/\s+/).length < 5) return;
+    const t = setTimeout(() => {
+      api
+        .detectLanguage(script)
+        .then((r) => setDetected(r.language))
+        .catch(() => undefined);
+    }, 700);
+    return () => clearTimeout(t);
+  }, [script]);
+
+  const videoLanguage = c?.video_language ?? (langTouched ? null : detected);
+
   function pickChannel(ch: Channel) {
     setChannelId(ch.id);
-    setChoices(fromChannel(ch));
+    setChoices((prev) => {
+      const next = fromChannel(ch);
+      // idioma salvo no canal vence; sem ele, mantém o que já estava escolhido na tela
+      return { ...next, video_language: next.video_language ?? (langTouched ? (prev?.video_language ?? null) : null) };
+    });
   }
 
   function pickAudio(file: File | null) {
@@ -124,18 +153,18 @@ export default function CriacaoPage() {
   const preview = useMemo(() => {
     if (!c) return null;
     const real = (duration * c.real_pct) / 100;
-    const yt = (real * c.youtube_pct) / 100;
     return {
       scenes: duration ? Math.max(1, Math.round(duration / c.avg_scene_seconds)) : 0,
       real,
-      yt,
-      stock: real - yt,
       ai: duration - real,
     };
   }, [c, duration]);
 
+  const langLabel = (v: string | null) => languages.find((l) => l.value === v)?.label ?? v ?? "—";
+
   const valid = [
-    !!channel && !!c && title.trim().length > 0 && words > 0 && (audioMode === "upload" ? !!audioFile : !!c.tts_voice),
+    !!channel && !!c && title.trim().length > 0 && words > 0 && !!videoLanguage &&
+      (audioMode === "upload" ? !!audioFile : !!c.tts_voice),
     !!c?.direction,
     !!c && c.avg_scene_seconds >= 2 && c.avg_scene_seconds <= 20,
     true,
@@ -150,7 +179,7 @@ export default function CriacaoPage() {
       .estimate({
         channel_id: channel.id,
         script,
-        config: { ...c },
+        config: { ...c, video_language: videoLanguage },
         audio_seconds: audioMode === "upload" ? audioSeconds : null,
         audio_mode: audioMode,
       })
@@ -165,7 +194,7 @@ export default function CriacaoPage() {
     fd.append("channel_id", String(channel.id));
     fd.append("title", title);
     fd.append("script", script);
-    fd.append("config", JSON.stringify(c));
+    fd.append("config", JSON.stringify({ ...c, video_language: videoLanguage }));
     fd.append("save_as_default", String(saveDefault));
     if (audioMode === "upload" && audioFile) fd.append("audio", audioFile);
     try {
@@ -206,20 +235,47 @@ export default function CriacaoPage() {
         <CardContent className="flex flex-col gap-6">
           {step === 0 && (
             <>
-              <Field
-                label="Canal"
-                hint={channels.length === 0 ? "Crie um canal primeiro, na tela Canais." : undefined}
-              >
-                <SimpleSelect
-                  value={channelId ? String(channelId) : null}
-                  onChange={(v) => {
-                    const ch = channels.find((x) => x.id === Number(v));
-                    if (ch) pickChannel(ch);
-                  }}
-                  options={channels.map((x) => ({ value: String(x.id), label: x.name }))}
-                  className="sm:w-96"
-                />
-              </Field>
+              <div className="grid gap-5 sm:grid-cols-[2fr_1fr]">
+                <Field
+                  label="Canal"
+                  hint={channels.length === 0 ? "Crie um canal primeiro, na tela Canais." : undefined}
+                >
+                  <SimpleSelect
+                    value={channelId ? String(channelId) : null}
+                    onChange={(v) => {
+                      const ch = channels.find((x) => x.id === Number(v));
+                      if (ch) pickChannel(ch);
+                    }}
+                    options={channels.map((x) => ({ value: String(x.id), label: x.name }))}
+                  />
+                </Field>
+                <Field
+                  label="Idioma do vídeo"
+                  hint={
+                    !langTouched && channel?.preset.default_video_language
+                      ? "Padrão salvo do canal. Narração, legendas e textos na tela seguem este idioma; as buscas são sempre em inglês."
+                      : detected
+                        ? `Roteiro detectado em ${langLabel(detected)}. Narração, legendas e textos na tela seguem este idioma; as buscas são sempre em inglês.`
+                        : "Preenchido sozinho ao colar o roteiro. As buscas são sempre em inglês."
+                  }
+                >
+                  <SimpleSelect
+                    value={videoLanguage}
+                    onChange={(v) => {
+                      setLangTouched(true);
+                      set("video_language", v);
+                    }}
+                    options={languages}
+                    disabled={!c}
+                  />
+                  {detected && videoLanguage && detected !== videoLanguage && (
+                    <p className="flex items-start gap-1.5 text-xs text-amber-300">
+                      <AlertTriangle className="mt-0.5 size-3.5 shrink-0" /> O roteiro parece estar em{" "}
+                      {langLabel(detected)}. Ele não é traduzido: a narração lê o texto como está.
+                    </p>
+                  )}
+                </Field>
+              </div>
               <Field label="Título">
                 <Input value={title} onChange={(e) => setTitle(e.target.value)} />
               </Field>
@@ -242,6 +298,7 @@ export default function CriacaoPage() {
               {audioMode === "tts" && c && (
                 <Field label="Narrador" hint="Vem do canal; troque aqui só para este vídeo.">
                   <VoicePicker
+                    language={videoLanguage}
                     value={c.tts_voice}
                     onChange={(v) =>
                       setChoices((x) => (x ? { ...x, tts_voice: v?.id ?? null, tts_voice_name: v?.name ?? null } : x))
@@ -332,14 +389,14 @@ export default function CriacaoPage() {
                   className="sm:w-64"
                 />
               </Field>
-              <SplitSlider
-                left="YouTube"
-                right="Bancos"
-                value={c.youtube_pct}
-                onChange={(v) => set("youtube_pct", v)}
-                disabled={c.real_pct === 0}
-              />
-              <Field label="Duração média por cena (s)" hint="Entre 2 e 20 s; a direção varia em torno dessa média.">
+              <p className="text-sm text-muted-foreground">
+                Clipes reais: o YouTube (Creative Commons) é tentado primeiro em todas as cenas enquanto houver cota no
+                dia; quando ela acaba, as cenas seguintes usam bancos de vídeo e imagens até a cota voltar.
+              </p>
+              <Field
+                label="Duração média por cena (s)"
+                hint={`Entre 2 e 20 s. Nenhum clipe fica mais de ${maxScene(c.avg_scene_seconds)} s na tela: cenas longas viram tomadas com clipes diferentes.`}
+              >
                 <Input
                   type="number"
                   min={2}
@@ -382,7 +439,7 @@ export default function CriacaoPage() {
               </div>
               <pre className="rounded-md bg-muted/60 p-4 font-mono text-sm leading-relaxed">
                 {`Duração ≈ ${fmtDuration(duration)} · ≈ ${preview.scenes} cenas
-Real ${fmtDuration(preview.real)}  →  YouTube ${fmtDuration(preview.yt)} · Bancos ${fmtDuration(preview.stock)}
+Real ${fmtDuration(preview.real)}  →  YouTube até a cota do dia, depois bancos
 IA   ${fmtDuration(preview.ai)}  →  ${aiLabel}`}
               </pre>
             </>
@@ -396,7 +453,9 @@ IA   ${fmtDuration(preview.ai)}  →  ${aiLabel}`}
                 <dt className="text-muted-foreground">Título</dt>
                 <dd>{title}</dd>
                 <dt className="text-muted-foreground">Roteiro</dt>
-                <dd>{words} palavras · idioma detectado automaticamente</dd>
+                <dd>
+                  {words} palavras · vídeo em {langLabel(videoLanguage)} · buscas em inglês
+                </dd>
                 <dt className="text-muted-foreground">Áudio</dt>
                 <dd>{audioMode === "upload" ? audioFile?.name : `Narrador ${c.tts_voice_name ?? "—"}`}</dd>
                 <dt className="text-muted-foreground">Direção</dt>
@@ -405,7 +464,7 @@ IA   ${fmtDuration(preview.ai)}  →  ${aiLabel}`}
                 <dd>Interpretados do roteiro · buscas em inglês</dd>
                 <dt className="text-muted-foreground">Composição</dt>
                 <dd>
-                  Real {c.real_pct}% (YouTube {c.youtube_pct}% / Bancos {100 - c.youtube_pct}%) · IA {100 - c.real_pct}%
+                  Real {c.real_pct}% (YouTube primeiro, bancos quando a cota acabar) · IA {100 - c.real_pct}%
                   ({aiLabel})
                 </dd>
                 <dt className="text-muted-foreground">Estilo e seleção</dt>
@@ -501,8 +560,8 @@ IA   ${fmtDuration(preview.ai)}  →  ${aiLabel}`}
                 <span>
                   <span className="font-medium">Salvar estas configurações como padrão do canal {channel.name}</span>
                   <span className="block text-xs text-muted-foreground">
-                    Narrador, direção, composição, ritmo e acabamento vêm preenchidos assim nos próximos vídeos deste
-                    canal.
+                    Idioma do vídeo, narrador, direção, composição, ritmo e acabamento vêm preenchidos assim nos
+                    próximos vídeos deste canal.
                   </span>
                 </span>
               </label>
