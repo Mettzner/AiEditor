@@ -154,6 +154,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "fonts_dir": str(DATA_DIR / "fonts"),
     "words_per_minute": {"en": 150, "pt": 145, "es": 150},
     "worker": {"max_parallel_productions": 2},
+    # upload da narração: limite de tamanho e de duração (conferida com o ffprobe antes de a produção existir)
+    "upload": {"max_mb": 500, "max_minutes": 240},
 }
 
 _lock = threading.Lock()

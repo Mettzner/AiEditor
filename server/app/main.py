@@ -7,7 +7,10 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from urllib.parse import urlsplit
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -39,7 +42,31 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="AiEditor", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="AiEditor", version=paths.app_version(), lifespan=lifespan)
+
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "[::1]", "::1", "testserver"}  # testserver: cliente de testes
+MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _host_only(value: str) -> str:
+    value = value.strip().lower()
+    if value.startswith("["):
+        return value.split("]")[0] + "]"
+    return value.rsplit(":", 1)[0] if value.count(":") == 1 else value
+
+
+@app.middleware("http")
+async def local_only(request: Request, call_next):
+    """A API só atende o próprio computador: Host precisa ser loopback (barra DNS rebinding) e, em mutações, a
+    origem do navegador (se houver) também. Requisições sem Origin (scripts locais, o próprio app) passam."""
+    if request.url.path.startswith("/api"):
+        if _host_only(request.headers.get("host", "")) not in LOOPBACK_HOSTS:
+            return JSONResponse({"detail": "Host não permitido"}, status_code=403)
+        origin = request.headers.get("origin")
+        if request.method in MUTATING and origin and origin != "null":
+            if _host_only(urlsplit(origin).netloc) not in LOOPBACK_HOSTS:
+                return JSONResponse({"detail": "Origem não permitida"}, status_code=403)
+    return await call_next(request)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],

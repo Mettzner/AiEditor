@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from datetime import timedelta
 from concurrent.futures import Future, ThreadPoolExecutor
 
 from sqlmodel import select, update
@@ -26,6 +27,11 @@ def _recover() -> None:
         s.exec(update(Production).where(Production.status == "running").values(status="queued", updated_at=now()))
         s.exec(update(Production).where(Production.status == "cancel_requested")
                .values(status="cancelled", updated_at=now()))
+        # a API caiu entre receber o áudio e liberar a produção: nunca roda com áudio incerto
+        stale = now() - timedelta(minutes=10)
+        s.exec(update(Production).where(Production.status == "preparing", Production.updated_at < stale)
+               .values(status="failed", error="Upload do áudio não terminou; crie a produção de novo",
+                       step_label="Falhou", updated_at=now()))
         s.commit()
 
 

@@ -102,7 +102,14 @@ export interface ProductionIssue {
   created_at: string;
 }
 
-export type ProductionStatus = "queued" | "running" | "done" | "failed" | "cancel_requested" | "cancelled";
+export type ProductionStatus =
+  | "preparing"
+  | "queued"
+  | "running"
+  | "done"
+  | "failed"
+  | "cancel_requested"
+  | "cancelled";
 
 export interface Production {
   id: number;
@@ -339,6 +346,9 @@ export interface Price {
   unit: string;
   price: number;
   note: string | null;
+  currency: string;
+  as_of: string | null;
+  regime: string;
 }
 
 export interface Track {
@@ -355,7 +365,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     let msg = `${res.status} ${res.statusText}`;
     try {
       const body = await res.json();
-      msg = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail ?? body);
+      const d = body.detail;
+      if (typeof d === "string") msg = d;
+      else if (d && typeof d === "object" && "message" in d)
+        msg = [d.message, ...(Array.isArray(d.errors) ? d.errors : [])].join(" · ");
+      else if (Array.isArray(d)) msg = d.map((e) => `${(e.loc ?? []).join(".")}: ${e.msg}`).join(" · ");
+      else msg = JSON.stringify(d ?? body);
     } catch {}
     throw new Error(msg);
   }

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import html
 import json
+from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -13,6 +15,7 @@ from ..config import SECRET_PROVIDERS, get_secret, load_settings, save_settings,
 from ..db import get_session
 from ..directions import image_path, list_directions
 from ..models import ProviderPrice
+from ..settings_schema import validate_price, validate_settings
 from ..pipeline.render import ffmpeg
 from ..providers.darkvi import client as darkvi_client
 from ..providers.darkvi import tts as darkvi_tts
@@ -48,6 +51,8 @@ def get_settings():
 @router.put("/settings")
 def put_settings(body: SettingsIn):
     if body.settings is not None:
+        if errors := validate_settings(body.settings):
+            raise HTTPException(422, {"message": "Configuração inválida", "errors": errors})
         save_settings(body.settings)
     for provider, value in (body.secrets or {}).items():
         if provider not in SECRET_PROVIDERS:
@@ -99,15 +104,26 @@ def get_prices(s: Session = Depends(get_session)):
 class PriceIn(BaseModel):
     id: int
     price: float
+    currency: str | None = None
+    as_of: str | None = None
 
 
 @router.put("/prices")
 def put_prices(body: list[PriceIn], s: Session = Depends(get_session)):
+    errors = [f"preço {item.id}: {e}" for item in body
+              for e in validate_price(item.price, item.currency or "USD", item.as_of)]
+    if errors:
+        raise HTTPException(422, {"message": "Preço inválido", "errors": errors})
     for item in body:
         row = s.get(ProviderPrice, item.id)
-        if row:
-            row.price = item.price
-            s.add(row)
+        if not row:
+            raise HTTPException(404, f"Preço {item.id} não encontrado")
+        if row.price != item.price and item.as_of is None:
+            row.as_of = date.today().isoformat()  # valor editado agora = conferido hoje
+        row.price = item.price
+        row.currency = item.currency or row.currency
+        row.as_of = item.as_of or row.as_of
+        s.add(row)
     s.commit()
     return list(s.exec(select(ProviderPrice).order_by(ProviderPrice.provider)))
 
@@ -173,7 +189,8 @@ def google_callback(state: str, code: str):
         msg = "Conta Google conectada. Pode fechar esta aba."
     except Exception as e:  # noqa: BLE001
         msg = f"Falha ao conectar: {e}"
-    return f"<html><body style='font-family:sans-serif;padding:40px'><h2>{msg}</h2></body></html>"
+    # a mensagem de erro pode trazer texto vindo de fora (Google, parâmetros da URL): sempre escapada
+    return f"<html><body style='font-family:sans-serif;padding:40px'><h2>{html.escape(msg)}</h2></body></html>"
 
 
 @router.get("/youtube/quota")

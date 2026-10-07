@@ -14,6 +14,7 @@ import { api, fmtDuration, fmtMoney, type Production, type Severity } from "@/li
 import { cn } from "@/lib/utils";
 
 const STATUS: Record<Production["status"], { label: string; className: string }> = {
+  preparing: { label: "Preparando", className: "bg-muted text-muted-foreground" },
   queued: { label: "Na fila", className: "bg-muted text-muted-foreground" },
   running: { label: "Em produção", className: "bg-sky-500/15 text-sky-300" },
   done: { label: "Concluído", className: "bg-emerald-500/15 text-emerald-300" },

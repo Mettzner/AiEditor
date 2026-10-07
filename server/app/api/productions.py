@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import Session, select, update
 
 from ..config import job_dir, load_settings
 from ..db import get_session, session_scope
@@ -22,6 +23,59 @@ router = APIRouter(tags=["productions"])
 
 AUDIO_EXT = {"mp3", "wav", "m4a"}
 SSE_LIFETIME = 25
+CHUNK = 1 << 20
+
+
+def _upload_limits() -> tuple[int, float]:
+    up = load_settings().get("upload") or {}
+    return int(up.get("max_mb", 500)) * 1024 * 1024, float(up.get("max_minutes", 240))
+
+
+async def receive_audio(audio: UploadFile, ext: str) -> Path:
+    """Grava o upload em streaming (sem carregar na memória), com limite de tamanho, num temporário exclusivo.
+
+    Depois confere com o ffprobe que é áudio de verdade e cabe no limite de duração. Erro → 400/413, sem resto."""
+    from ..config import UPLOADS_DIR
+    from ..fsutil import unique_temp
+
+    max_bytes, max_minutes = _upload_limits()
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = unique_temp(UPLOADS_DIR / f"narration.{ext}", "upload")
+    got = 0
+    try:
+        with tmp.open("wb") as f:
+            while chunk := await audio.read(CHUNK):
+                got += len(chunk)
+                if got > max_bytes:
+                    raise HTTPException(413, f"Áudio passa do limite de {max_bytes // (1024 * 1024)} MB")
+                f.write(chunk)
+        if got == 0:
+            raise HTTPException(400, "Arquivo de áudio vazio")
+        seconds = audio_duration(tmp)
+        if seconds is None:
+            raise HTTPException(400, "O arquivo enviado não é um áudio válido (mp3, wav ou m4a)")
+        if seconds > max_minutes * 60:
+            raise HTTPException(413, f"Áudio de {seconds / 60:.0f} min passa do limite de {max_minutes:.0f} min")
+        return tmp
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def audio_duration(path: Path) -> float | None:
+    """Duração do primeiro stream de áudio (ffprobe); None se não houver áudio decodificável."""
+    from ..pipeline.render import ffmpeg
+
+    try:
+        info = ffmpeg.probe(path)
+    except Exception:  # noqa: BLE001 — ffprobe falhou: não é mídia válida
+        return None
+    if not any(st.get("codec_type") == "audio" for st in info.get("streams", [])):
+        return None
+    try:
+        return float(info.get("format", {}).get("duration") or 0) or None
+    except (TypeError, ValueError):
+        return None
 
 
 def _card(p: Production, channel_name: str | None, issues: list[Issue],
@@ -176,7 +230,13 @@ async def create_production(
         ext = audio.filename.rsplit(".", 1)[-1].lower()  # type: ignore[union-attr]
         if ext not in AUDIO_EXT:
             raise HTTPException(400, "Envie um arquivo mp3, wav ou m4a")
-    cfg = _build_config(s, channel_id, title, json.loads(config or "{}"), audio_mode, script)
+    try:
+        overrides = json.loads(config or "{}")
+    except ValueError as e:
+        raise HTTPException(422, "config não é um JSON válido") from e
+    if not isinstance(overrides, dict):
+        raise HTTPException(422, "config deve ser um objeto JSON")
+    cfg = _build_config(s, channel_id, title, overrides, audio_mode, script)
     if audio_mode == "tts" and not cfg.tts_voice:
         raise HTTPException(400, "Sem áudio enviado e nenhum narrador selecionado")
     if save_as_default:
@@ -187,8 +247,13 @@ async def create_production(
                      "music": {**ch.preset.get("music", {}), "enabled": cfg.music.enabled},
                      "default_video_language": cfg.lang}
         s.add(ch)
-    p = Production(channel_id=channel_id, title=title, script=script, config=cfg.model_dump(), status="queued",
-                   step_label="Na fila", cost_estimated=estimate(cfg, script)["cost"]["total"])
+    # o áudio chega inteiro e validado ANTES de a produção existir; e ela nasce "preparing" (o worker só pega
+    # "queued"), para nunca consumir um áudio pela metade
+    received = await receive_audio(audio, ext) if audio_mode == "upload" else None  # type: ignore[arg-type]
+    p = Production(channel_id=channel_id, title=title, script=script, config=cfg.model_dump(),
+                   status="preparing" if received else "queued",
+                   step_label="Preparando áudio" if received else "Na fila",
+                   cost_estimated=estimate(cfg, script)["cost"]["total"])
     s.add(p)
     s.commit()
     s.refresh(p)
@@ -201,10 +266,22 @@ async def create_production(
                             f"foi criado em {LANGUAGES[cfg.lang][1]}. O texto não é traduzido: a narração lê o roteiro "
                             "como está, as legendas seguem a fala e títulos e cards seguem o idioma escolhido."))
         s.commit()
-    if audio_mode == "upload":
-        dest = job_dir(p.id) / "input" / f"narration.{ext}"  # type: ignore[arg-type]
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(await audio.read())  # type: ignore[union-attr]
+    if received:
+        try:
+            dest = job_dir(p.id) / "input" / f"narration.{ext}"  # type: ignore[arg-type]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            received.replace(dest)
+        except OSError as e:
+            received.unlink(missing_ok=True)
+            p.status, p.error, p.step_label = "failed", f"Não foi possível guardar o áudio: {e}", "Falhou"
+            s.add(p)
+            s.commit()
+            raise HTTPException(500, "Não foi possível guardar o áudio enviado") from e
+        # condicional: se a produção foi cancelada enquanto o áudio era movido, continua cancelada
+        s.exec(update(Production).where(Production.id == p.id, Production.status == "preparing")
+               .values(status="queued", step_label="Na fila", updated_at=now()))
+        s.commit()
+        s.refresh(p)
     return _cards(s, [p])[0]
 
 
@@ -213,7 +290,7 @@ def cancel_production(production_id: int, s: Session = Depends(get_session)):
     p = s.get(Production, production_id)
     if not p:
         raise HTTPException(404, "Produção não encontrada")
-    if p.status == "queued":
+    if p.status in ("queued", "preparing"):
         p.status = "cancelled"
         p.step_label = "Cancelado"
     elif p.status == "running":
