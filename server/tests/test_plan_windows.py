@@ -28,6 +28,9 @@ def _fake_llm(max_units: int, calls: list):
             return C.ContextBible.model_validate(bible), LLMUsage(task="bible", cost=0.01)
         a, b = map(int, re.search(r"Plan units (\d+) to (\d+)", user).groups())
         calls.append((a, b))
+        # roteiro e bíblia vão em blocos em cache; o pedido de cada janela não repete a bíblia
+        roteiro, biblia = kw["context"]
+        assert "SCRIPT UNITS" in roteiro and biblia.startswith("CONTEXT BIBLE") and "CONTEXT BIBLE" not in user
         if b - a + 1 > max_units:
             err = LLMCallFailed("cortada", response=None, truncated=True)
             err.usage = LLMUsage(task="plan", output_tokens=16000, cost=0.16)

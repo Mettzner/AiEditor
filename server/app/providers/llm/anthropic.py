@@ -3,6 +3,7 @@
 Estrutura de toda chamada (OTIMIZACAO_CUSTO_CLAUDE.md §3), do mais estável para o mais variável:
   1. system: instruções fixas da etapa (regras, exemplos)          ← cache_control
   2. contexto da produção (preset, brief, roteiro numerado)        ← cache_control
+     (uma lista de blocos ganha um breakpoint em cada um: ex. roteiro e, depois, a bíblia da produção)
   3. pedido desta chamada (ex.: "planeje as unidades 0–89")         (sem cache)
 Nada variável (data, id da produção) entra nas partes 1 e 2; o contexto é gerado uma vez por produção e
 reaproveitado byte a byte. Parâmetros de raciocínio iguais em todas as chamadas da etapa.
@@ -111,12 +112,13 @@ class AnthropicLLM:
 
     # ---------------------------------------------------------------- parâmetros por modelo
     @staticmethod
-    def _params(model: str, system: str, user: str, context: str | None, effort: str | None, thinking: str,
-                max_tokens: int, cache_ttl: str) -> dict:
+    def _params(model: str, system: str, user: str, context: str | list[str] | None, effort: str | None,
+                thinking: str, max_tokens: int, cache_ttl: str) -> dict:
         cc = {"type": "ephemeral"} if cache_ttl == "5m" else {"type": "ephemeral", "ttl": cache_ttl}
         content = []
-        if context:
-            content.append({"type": "text", "text": context, "cache_control": cc})
+        for block in ([context] if isinstance(context, str) else context or []):
+            if block:
+                content.append({"type": "text", "text": block, "cache_control": cc})
         content.append({"type": "text", "text": user})
         params: dict = {
             "model": model, "max_tokens": max_tokens,
@@ -142,7 +144,7 @@ class AnthropicLLM:
 
     # ---------------------------------------------------------------- chamada estruturada
     def structured(self, *, model: str, system: str, user: str, schema: type[T], effort: str | None = None,
-                   max_tokens: int = 16000, context: str | None = None, task: str = "",
+                   max_tokens: int = 16000, context: str | list[str] | None = None, task: str = "",
                    thinking: str = "adaptive", use_cache: bool = True, batch: bool = False,
                    cache_ttl: str = "5m") -> tuple[T, LLMUsage]:
         from ...db import session_scope

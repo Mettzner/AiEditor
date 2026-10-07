@@ -38,6 +38,15 @@ def test_parametros_com_breakpoints_de_cache():
     assert p["thinking"] == {"type": "adaptive"} and p["output_config"] == {"effort": "low"}
 
 
+
+def test_biblia_num_segundo_bloco_em_cache():
+    p = A.AnthropicLLM._params("claude-sonnet-5-5", "SYSTEM", "Plan units 0 to 9", ["ROTEIRO", "BIBLIA"], "low",
+                               "adaptive", 4000, "5m")
+    roteiro, biblia, pedido = p["messages"][0]["content"]
+    assert roteiro["text"] == "ROTEIRO" and biblia["text"] == "BIBLIA"
+    assert roteiro["cache_control"] == biblia["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in pedido  # 3 breakpoints no total (sistema, roteiro, bíblia): limite é 4
+
 def test_parametros_por_modelo():
     haiku = A.AnthropicLLM._params("claude-haiku-4-5", "S", "u", None, "low", "off", 300, "5m")
     assert "output_config" not in haiku and "thinking" not in haiku  # Haiku 4.5 não aceita effort

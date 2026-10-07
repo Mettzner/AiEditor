@@ -8,8 +8,9 @@ frase ou pausa, nunca no meio de uma palavra, e os tempos vêm sempre da transcr
 A primeira chamada lê o roteiro inteiro e gera só a Bíblia de Contexto (tema, público, tom, linha do tempo de
 contextos com época, lugar, sociedade, cultura material e anacronismos, entidades e lugares recorrentes). As
 chamadas das cenas usam o mesmo sistema e o mesmo contexto (prefixo em cache, lido a 10% do preço) e recebem a
-bíblia no pedido. Bíblia e cenas não cabem num único esquema de saída estruturada (a gramática compilada fica
-grande demais para a API). Toda cena herda o bloco de contexto em que está.
+bíblia num segundo bloco em cache, igual em todas as janelas. Bíblia e cenas não cabem num único esquema de
+saída estruturada (a gramática compilada fica grande demais para a API). Toda cena herda o bloco de contexto
+em que está.
 """
 from __future__ import annotations
 
@@ -282,14 +283,17 @@ def run(ctx: JobContext) -> str:
     context = plan_context(ctx, units)
 
     def plan_units(win: list[dict], label: str, bible: dict) -> PlanWindow:
-        user = f"{brief_section(bible)}\nPlan units {win[0]['i']} to {win[-1]['i']} ({label})."
+        brief = brief_section(bible)
+        user = f"Plan units {win[0]['i']} to {win[-1]['i']} ({label})."
         err: Exception | None = None
         for attempt in range(2):
             try:
                 if economy:
                     ctx.progress(0.3, "Aguardando IA (lote econômico, até 24 h)")
-                parsed, usage = call_llm("plan", system=PLAN_SYSTEM, context=context, user=user, schema=PlanWindow,
-                                         max_tokens=PLAN_MAX_TOKENS, batch=economy)
+                # a bíblia (~5–10 mil tokens, igual em todas as janelas) é um 2º bloco em cache: gravada uma vez e
+                # lida a 10% do preço, em vez de entrar inteira e sem cache no pedido de cada janela
+                parsed, usage = call_llm("plan", system=PLAN_SYSTEM, context=[context, brief], user=user,
+                                         schema=PlanWindow, max_tokens=PLAN_MAX_TOKENS, batch=economy)
                 ctx.record_llm(usage)
                 return _validate(parsed, win[0]["i"], win[-1]["i"], media_style, bible)
             except Exception as e:  # noqa: BLE001

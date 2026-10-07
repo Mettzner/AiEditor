@@ -30,7 +30,7 @@ class LLMProvider(Protocol):
     id: str
 
     def structured(self, *, model: str, system: str, user: str, schema: type[T], effort: str | None = None,
-                   max_tokens: int = 16000, context: str | None = None, task: str = "",
+                   max_tokens: int = 16000, context: str | list[str] | None = None, task: str = "",
                    thinking: str = "adaptive", use_cache: bool = True, batch: bool = False,
                    cache_ttl: str = "5m") -> tuple[T, LLMUsage]: ...
 
@@ -52,7 +52,7 @@ def get_llm(task: str) -> tuple[LLMProvider, dict]:
     return provider, cfg
 
 
-def call_llm(task: str, *, system: str, user: str, schema: type[T], context: str | None = None,
+def call_llm(task: str, *, system: str, user: str, schema: type[T], context: str | list[str] | None = None,
              max_tokens: int = 8000, batch: bool = False) -> tuple[T, LLMUsage]:
     """Atalho: chama o modelo configurado para a etapa com os parâmetros dela (iguais em toda chamada da etapa,
     para não invalidar o cache do prompt)."""
