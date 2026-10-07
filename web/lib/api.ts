@@ -52,6 +52,7 @@ export interface Preset {
   context_cards?: boolean;
   sfx?: boolean;
   film_look?: boolean;
+  default_video_language?: string | null;
 }
 
 export type MediaStyle = "real_only" | "real_preferred" | "free";
@@ -364,6 +365,9 @@ export const api = {
   directions: () => request<Direction[]>("/directions"),
   directionImage: (id: string) => `${API_URL}/directions/${id}/image`,
   voices: () => request<Voice[]>("/tts/voices"),
+  languages: () => request<{ value: string; label: string }[]>("/languages"),
+  detectLanguage: (script: string) =>
+    request<{ language: string | null }>("/detect-language", json("POST", { script })),
 
   settings: () => request<SettingsPayload>("/settings"),
   saveSettings: (body: { settings?: Record<string, unknown>; secrets?: Record<string, string> }) =>
