@@ -47,13 +47,14 @@ from ..context import HISTORICAL, STRATEGY_LABEL, is_historical, scene_anachroni
 from ...budget import BudgetExceeded, VisionBudget, paid_llm
 from ..plan import load_bible
 from ..timing import Timings
-from ..validation import REVIEW_REQUIRED, classify, comparable_score
+from ..validation import REVIEW_REQUIRED, classify, comparable_score, needs_exact
 from ..validation import policy as validation_policy
 from ..visual import (REWRITE_SYSTEM, QueryRewriteBatch, compact_json, image_type_for, sanitize_queries, scene_style,
                       style_of_realism, video_type_for)
 from .funnel import Choice, SceneContext, choose, observed_descriptions
 from .prerank import rank, technical_filter
-from .search import cached_search, search_all
+from .plan_search import build_search_plan, documentary_query, identity_terms
+from .search import cached_fetch, cached_search, search_all
 
 log = logging.getLogger("aieditor.select")
 
@@ -140,6 +141,9 @@ class Selector:
         self.budget = VisionBudget(ctx.production_id)
         self.budget_reported = False
         self.validation_policy = validation_policy(ctx.settings)
+        # plano de busca por bloco (montado em run) e catálogo de candidatos compartilhado por grupo
+        self.search_plan: dict = {"groups": {}, "scene_group": {}}
+        self.catalog: dict[str, dict[str, object]] = {}
         self.totals: dict = {"searches": 0, "vision_calls": 0, "vision_failed": 0, "vision_cost": 0.0, "cache_hit": 0,
                              "cache_miss": 0, "cache_empty": 0, "cache_error": 0, "quota_blocked": 0}
 
@@ -209,12 +213,29 @@ class Selector:
                 "visual_intent": scene.get("timeless_alternative") or scene.get("visual_intent", ""),
                 "must_show": [], "queries": [scene["timeless_query"]] if scene.get("timeless_query") else []}
 
+    def plan_searches(self, scenes: list[dict]) -> None:
+        self.search_plan = build_search_plan(scenes, self.brief, self.cfg)
+
+    def _group(self, scene: dict) -> dict | None:
+        key = self.search_plan["scene_group"].get(scene["id"])
+        return self.search_plan["groups"].get(key) if key else None
+
+    def _doc_query(self, scene: dict) -> str:
+        """Consulta documental da cena, ou a do grupo (mesma consulta → cache, sem nova cota)."""
+        own = documentary_query(scene, self.brief, scene.get("must_avoid"))
+        group = self._group(scene)
+        return own or (group or {}).get("documentary_query", "")
+
     def _queries_for(self, step: str, scene: dict, queries: list[str]) -> list[str]:
         """Queries de cada etapa. Cena histórica: YouTube usa a de reconstituição (antes de ~1890) ou a de arquivo
         (depois), conforme a viabilidade da época; acervos usam a de arquivo; atemporal, a do plano seguro."""
         if step == "youtube" and scene.get("youtube_query") and queries == list(scene.get("queries") or []):
             # tomadas da mesma cena repetem a busca da primeira (cache local: sem gastar cota de novo)
             queries = [scene["youtube_query"]] + [q for q in queries if q != scene["youtube_query"]]
+        doc = self._doc_query(scene) if step in ("youtube", "archive") else ""
+        if doc and queries == list(scene.get("queries") or []) or (doc and step == "archive"):
+            # fontes documentais: a consulta com nome próprio/científico, ano e lugar vem primeiro (C4)
+            queries = [doc] + [q for q in queries if q != doc]
         if not is_historical(scene):
             return queries
         feas = scene["context"].get("footage_feasibility")
@@ -235,10 +256,22 @@ class Selector:
         if source == "youtube":
             out = []
             yt_per_page = int(self.cfg.get("youtube_results_per_query", 50))
-            for q in queries[: int(self.cfg["youtube_queries_per_scene"])]:
-                out += cached_search("youtube", "video", q, yt_per_page, lang,
-                                     lambda q=q: youtube.search(q, per_page=yt_per_page, lang=lang), stats)
-            return out
+            budget = (self._group(scene) or {}).get("budget") or {}
+            n_queries = int(budget.get("youtube_queries", self.cfg["youtube_queries_per_scene"]))
+            max_pages = int(budget.get("youtube_pages", 1))
+            for q in queries[:n_queries]:
+                page, token = cached_fetch("youtube", "video", q, yt_per_page, lang,
+                                           lambda q=q: youtube.search_page(q, yt_per_page, lang), stats)
+                out += page
+                pages = 1
+                while token and pages < max_pages and self._wants_next_page(out, scene):
+                    page, token = cached_fetch(
+                        "youtube", "video", q, yt_per_page, lang,
+                        lambda q=q, t=token: youtube.search_page(q, yt_per_page, lang, t), stats, page=pages)
+                    out += page
+                    pages += 1
+                stats["youtube_pages"] = stats.get("youtube_pages", 0) + pages
+            return list({c.key: c for c in out}.values())
         if source == "archive":
             feas = (scene.get("context") or {}).get("footage_feasibility")
             out, errors = [], []
@@ -264,6 +297,25 @@ class Selector:
             log.warning("cena %s (%s): %s", scene["id"], source, errors[:3])
         return cands
 
+    def _wants_next_page(self, found: list, scene: dict) -> bool:
+        """Outra página só se há poucos candidatos úteis (duração, inédito, com a identidade quando exigida) e a
+        cota de busca do dia tem folga além da reserva para as próximas cenas. Cada página = 1 busca nova."""
+        from ...providers.youtube import quota as yt_quota
+
+        dur = scene["end"] - scene["start"]
+        terms = identity_terms(scene, self.brief) if needs_exact(scene) else []
+        with self.lock:
+            used = set(self.used)
+
+        def useful(c) -> bool:
+            if c.key in used or c.duration < dur:
+                return False
+            return not terms or any(t in c.title.lower() for t in terms)
+
+        if sum(1 for c in found if useful(c)) >= int(self.cfg.get("youtube_min_useful", 8)):
+            return False
+        return yt_quota.status()["searches_left"] > int(self.cfg.get("youtube_page_reserve", 20))
+
     def _try_source(self, source: str, scene: dict, previous: str, stats: dict, queries: list[str],
                     must_avoid: list[str]) -> Choice | None:
         sid = scene["id"]
@@ -275,8 +327,15 @@ class Selector:
             return None
         with self.timer.track(sid, f"busca ({SOURCE_LABEL[source]})"):
             cands = self._search(source, scene, queries, stats)
+        group = self._group(scene)
         with self.lock:
             used = set(self.used)
+            if group is not None:  # cenas do mesmo grupo enxergam o que já foi descoberto, sem buscar de novo
+                shared = self.catalog.setdefault(f"{group['key']}|{source}", {})
+                for c in cands:
+                    shared.setdefault(c.key, c)
+                cands = list(shared.values())
+                group["candidates"][source] = len(shared)
         allowance, allowed = scene_style(scene, self.media_style)
         avoid = list(dict.fromkeys(must_avoid + scene_anachronisms(scene)))
         with self.timer.track(sid, "filtro + ranking de texto"):
@@ -285,6 +344,13 @@ class Selector:
                                                 self.franchises)
         stats["style_rejected"] = stats.get("style_rejected", 0) + sum(rejected.get(r, 0)
                                                                      for r in STYLE_REJECT_REASONS)
+        if group is not None:
+            with self.lock:
+                bucket = group["rejected"].setdefault(source, {})
+                for reason, n in rejected.items():
+                    bucket[reason] = bucket.get(reason, 0) + n
+                group["queries"].setdefault(source, [])
+                group["queries"][source] = list(dict.fromkeys(group["queries"][source] + queries))
         if not passed:
             self.ctx.issue("SCENE_NO_CANDIDATES",
                            f"Nenhum candidato de {SOURCE_LABEL[source]} passou no filtro técnico",
@@ -294,7 +360,9 @@ class Selector:
             passed, int(self.cfg["frames_per_candidate"]))
         vocab = (scene.get("context") or {}).get("search_vocabulary") or []
         ranked = rank(passed, queries + ([" ".join(vocab)] if vocab else []), scene.get("visual_intent", ""), dur,
-                      int(self.cfg["prerank_keep"]), scene.get("subject", ""), scene.get("must_show") or [])
+                      int(self.cfg["prerank_keep"]), scene.get("subject", ""), scene.get("must_show") or [],
+                      identity=identity_terms(scene, self.brief), exact=needs_exact(scene),
+                      per_channel=int(self.cfg.get("vision_sample_per_channel", 2)))
         stats["_timer"], stats["_scene"] = self.timer, sid
         stats["_budget"], stats["_record"] = self.budget, self.record_vision
         choice = choose(ranked, self._scene_ctx(scene, previous, must_avoid), self.cfg, stats)
@@ -396,6 +464,8 @@ class Selector:
         if feas in HISTORICAL:
             return self._period_chain(planned, allow_ai, scene or {}, feas)
         chain = ["youtube", "stock"] if planned == "youtube" else ["stock"]
+        if planned != "youtube" and self.youtube_on and self.cfg.get("allow_youtube_fallback_from_stock", True):
+            chain.append("youtube")  # preferência, não regra: banco sem resultado bom tenta o YouTube antes da IA
         if self.ai_image_on and allow_ai:
             chain.append("ai_image")
         return chain + ["stock_photo"]
@@ -429,6 +499,7 @@ class Selector:
         min_score = float(self.cfg["min_score"])
         rewrite_below = float(self.cfg.get("rewrite_below", min_score))
         reserve: list[Option] = []
+        compared = False
         rewritten = rewrite == "none"
         for source in self._chain(planned, allow_ai, scene):
             if skip and source in skip:
@@ -504,11 +575,23 @@ class Selector:
             text_based = not vision or choice.method == "text_fallback"
             if (text_based and choice.score >= float(self.cfg.get("text_min_score", 3.0))) or \
                     (not text_based and choice.score >= min_score):
-                d.options = options + sorted(reserve, key=lambda o: o.score, reverse=True)
+                compare = (not text_based and (self._group(scene) or {}).get("budget", {}).get("compare_sources")
+                           and source in ("youtube", "stock", "archive") and not compared)
+                if compare:
+                    # cena de evidência exata: a outra fonte real também é avaliada (mesma escala, a visão) antes
+                    # de decidir; só uma comparação por cena, para o gasto não crescer sem limite
+                    compared = True
+                    reserve += options
+                    d.stats["compared_sources"] = True
+                    continue
+                d.options = sorted(options + reserve, key=lambda o: o.score, reverse=True) if compared else \
+                    options + sorted(reserve, key=lambda o: o.score, reverse=True)
                 return d
             reserve += [o for o in options if o.score > 0]  # nota 0 = estilo incompatível/franquia: nunca
         if reserve:
-            d.options, d.kind = sorted(reserve, key=lambda o: o.score, reverse=True), "low_score"
+            best = sorted(reserve, key=lambda o: o.score, reverse=True)
+            visual_ok = compared and best[0].method.startswith("vision") and best[0].score >= min_score
+            d.options, d.kind = best, ("ok" if visual_ok else "low_score")
             return d
         if vision and is_historical(scene):
             # cena de época: a foto genérica não passa pela IA de visão e poderia ser moderna (§9: nunca filmagem
@@ -739,6 +822,7 @@ def run(ctx: JobContext) -> str:
     draw_charts(ctx, sel, plan)  # números com fonte: gráfico desenhado pelo código, sem busca nem visão
     real = [s for s in plan["scenes"] if s["source"] in ("stock", "youtube")]
     todo = [s for s in real if s["id"] not in sel.selection]
+    sel.plan_searches([s for s in plan["scenes"] if s["source"] != "ai" or s.get("data_points")] or todo)
     if real and not sel.providers and not sel.youtube_on:
         raise StepError("PROVIDER_QUOTA", "Nenhuma fonte de vídeo ativa: configure Pexels, Pixabay ou YouTube")
     if not gemini.available():
@@ -867,6 +951,9 @@ def run(ctx: JobContext) -> str:
                   search_cache={k: t.get(k, 0) for k in ("cache_hit", "cache_miss", "cache_empty", "cache_error",
                                                          "quota_blocked", "youtube_minute_blocked")})
     ctx.write_json("timing_report.json", report)
+    ctx.write_json("search_plan.json", {"grouping": sel.cfg.get("search_grouping", "context_entity_action"),
+                                        "youtube_results_per_query": sel.cfg.get("youtube_results_per_query"),
+                                        "groups": list(sel.search_plan["groups"].values())})
     log.info("seleção (%s): %.1fs no total, %.1fs para avaliar %d cena(s) reais, %d chamada(s) de visão, "
              "%d busca(s); mais lentas: %s", report["mode"], report["wall_seconds"], t_decide, len(todo),
              t["vision_calls"], t["searches"], report["slowest_stages"])

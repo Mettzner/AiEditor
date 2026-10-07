@@ -122,9 +122,54 @@ def text_score(c: Candidate, queries: list[str], visual_intent: str, duration: f
     return round(score * getattr(c, "penalty", 1.0), 2)
 
 
+IDENTITY_CAP = 0.3  # sem nenhum nome da identidade exigida: nota × 0,3 (qualidade não compensa)
+SEMANTIC_WEIGHT = 0.4
+
+
+def _has_identity(c: Candidate, terms: list[str]) -> bool:
+    from ..semantics import norm
+
+    text = norm(" ".join([c.title, getattr(c, "description", ""), getattr(c, "observed", "")]))
+    return any(t in text for t in terms)
+
+
+def diversify(ranked: list[Candidate], keep: int, per_channel: int = 2) -> list[Candidate]:
+    """Amostra para a visão: os melhores, com no máximo `per_channel` do mesmo canal/autor; vagas que sobrarem
+    voltam a ser preenchidas pela ordem do ranking."""
+    out: list[Candidate] = []
+    count: dict[str, int] = {}
+    for c in ranked:
+        who = (getattr(c, "channel_id", "") or c.author or c.provider).lower()
+        if count.get(who, 0) < per_channel:
+            out.append(c)
+            count[who] = count.get(who, 0) + 1
+        if len(out) >= keep:
+            return out
+    out += [c for c in ranked if c not in out][: keep - len(out)]
+    return out
+
+
 def rank(cands: list[Candidate], queries: list[str], visual_intent: str, duration: float,
-         keep: int | None = None, subject: str = "", must_show: list[str] | None = None) -> list[Candidate]:
+         keep: int | None = None, subject: str = "", must_show: list[str] | None = None,
+         identity: list[str] | None = None, exact: bool = False, per_channel: int | None = None) -> list[Candidate]:
+    """Ranking híbrido: lexical (sempre) + semântico (opcional, providers/embeddings) + identidade.
+
+    Cena de identidade exata: candidato sem nenhum nome da entidade (título, descrição, o que uma IA já viu) tem
+    a nota limitada, e nenhum bônus semântico/qualidade a recupera."""
+    from ...providers import embeddings
+
     for c in cands:
         c.score = text_score(c, queries, visual_intent, duration, subject, must_show)
+    sims = embeddings.similarities(" ".join([subject, visual_intent, *queries[:1]]),
+                                   [" ".join([c.title, getattr(c, "observed", "")]) for c in cands])
+    if sims:
+        for c, sim in zip(cands, sims):
+            c.score = round((1 - SEMANTIC_WEIGHT) * c.score + SEMANTIC_WEIGHT * 10 * sim, 2)
+    if identity and exact:
+        for c in cands:
+            if not _has_identity(c, identity):
+                c.score = round(c.score * IDENTITY_CAP, 2)
     ranked = sorted(cands, key=lambda c: c.score, reverse=True)
+    if keep and per_channel:
+        return diversify(ranked, keep, per_channel)
     return ranked[:keep] if keep else ranked

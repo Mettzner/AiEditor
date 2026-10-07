@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from ..config import load_settings
 from .allocate import composition, targets
 
 
@@ -113,6 +114,14 @@ def build_report(job: Path, production: dict, config, issues: list[dict]) -> dic
                              "max": round(max(durations), 2) if durations else 0},
             "composicao_meta_pct": {k: _pct(v, total) for k, v in goal.items()},
             "composicao_final_pct": {k: _pct(v, total) for k, v in final_sec.items()},
+            # youtube_pct é a fatia do MATERIAL REAL (não do vídeo inteiro): meta efetiva × alcançado
+            "youtube_no_material_real": {
+                "meta_pct": _pct(goal.get("youtube", 0), goal.get("youtube", 0) + goal.get("stock", 0)),
+                "alcancado_pct": _pct(final_sec.get("youtube", 0), final_sec.get("youtube", 0)
+                                      + final_sec.get("stock", 0)),
+                "regra": "YouTube primeiro enquanto houver cota" if (load_settings()["youtube"].get("first", True))
+                else f"{config.youtube_pct}% do material real"},
+            "validacao": _validation_counts(selection, plan["scenes"], job),
             "chamadas_visao": sum(int(v.get("vision_calls") or 0) for v in selection.values()),
             "buscas": sum(int(v.get("searches") or 0) for v in selection.values()),
             "crossfades": sum(1 for s in timeline.get("scenes", []) if s["transition_in"]["type"] == "crossfade"),
@@ -129,6 +138,14 @@ def build_report(job: Path, production: dict, config, issues: list[dict]) -> dic
         "overlays": timeline.get("overlays", []),
         "problemas": [{k: i.get(k) for k in ("code", "severity", "scene", "message")} for i in issues],
     }
+
+
+def _validation_counts(selection: dict, scenes: list[dict], job: Path) -> dict:
+    counts: dict[str, int] = {}
+    for s in scenes:
+        st = scene_validation(selection.get(s["id"], {}), s, config_min_score(job))["status"]
+        counts[st] = counts.get(st, 0) + 1
+    return counts
 
 
 def config_min_score(job: Path) -> float:

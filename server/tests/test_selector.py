@@ -119,6 +119,9 @@ def env(monkeypatch):
     monkeypatch.setattr(gemini, "available", lambda: True)
     monkeypatch.setattr(gemini, "rate_sheet", vision)
     monkeypatch.setattr(yt, "_key", lambda: "k")
+    # nunca rede de verdade: o YouTube responde vazio, salvo quando o teste simula outra coisa
+    monkeypatch.setattr(yt, "request", lambda method, url, **kw: httpx.Response(
+        200, json={"items": []}, request=httpx.Request(method, url)))
     llm = FakeLLM()
     monkeypatch.setattr(sel_mod, "call_llm", llm)
     return {"stock": stock, "vision": vision, "monkeypatch": monkeypatch, "llm": llm}
@@ -305,7 +308,7 @@ def test_download_falhando_cai_para_proxima_fonte(env):
     def broken_segment(*a, **k):
         raise RuntimeError("yt-dlp falhou")
 
-    env["monkeypatch"].setattr(yt, "search", fake_search)
+    env["monkeypatch"].setattr(yt, "search_page", lambda q, n=50, lang="en", token=None: (fake_search(q), None))
     env["monkeypatch"].setattr(yt, "download_segment", broken_segment)
     ctx = make_ctx()
     entry = sel_mod.Selector(ctx).select_scene(scene(source="youtube"))
@@ -329,7 +332,7 @@ def test_download_tenta_proximo_colocado_antes_de_trocar_de_fonte(env):
         dest.write_bytes(b"x")
         return dest
 
-    env["monkeypatch"].setattr(yt, "search", fake_search)
+    env["monkeypatch"].setattr(yt, "search_page", lambda q, n=50, lang="en", token=None: (fake_search(q), None))
     env["monkeypatch"].setattr(yt, "download_segment", segment)
     entry = sel_mod.Selector(make_ctx()).select_scene(scene(source="youtube"))
     assert entry["source_used"] == "youtube" and len(tried) == 2 and entry["external_id"] == tried[1]

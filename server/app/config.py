@@ -112,6 +112,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         # strict_for_exact_identity: cena de pessoa/evento/espécie exata sem confirmação fica "revisar";
         # lenient: material ilustrativo segue com aviso (pipeline/validation.py)
         "validation_policy": "strict_for_exact_identity",
+        # Fase C: plano de busca por bloco, paginação adaptativa e comparação entre fontes nas cenas exatas
+        "search_grouping": "context_entity_action",
+        "max_youtube_pages_per_group": 2,
+        "youtube_min_useful": 8,  # menos candidatos úteis que isso (e cota sobrando): pede a próxima página
+        "youtube_page_reserve": 20,  # buscas que a paginação nunca consome (ficam para as próximas cenas)
+        "allow_youtube_fallback_from_stock": True,
+        "compare_sources_for_exact": True,
+        "vision_sample_per_channel": 2,  # diversidade na amostra enviada à visão
+        "verify_final_segment": True,
         "gemini_model": "gemini-3.8-flash",
         "parallel_scenes": 4,
         "parallel_downloads": 4,
@@ -146,6 +155,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "budget": {"max_usd_per_production": 2.0},
     # OpenAI (ChatGPT) como 2ª IA de visão, antes do Claude; só com a chave "openai" configurada
     "openai": {"vision_model": "gpt-4.1-mini"},
+    # ranking semântico opcional (providers/embeddings.py): desligado; exige instalar sentence-transformers
+    "ranking": {"semantic": False, "model": "sentence-transformers/all-MiniLM-L6-v2"},
     "music": {"library_dir": str(MUSIC_DIR), "default_volume_db": -22},
     # Efeitos sonoros: data/sfx/<categoria>/. Com chave do Freesound, baixa sons CC0 quando faltam; sem ela (ou
     # offline), usa sons sintetizados. allow_attribution aceita também CC BY (creditado no creditos.txt).
