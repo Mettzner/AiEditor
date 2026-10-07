@@ -82,6 +82,7 @@ def generate_scenes(ctx: JobContext, sel, scenes: list[dict],
             return to_stock(scene, "cota diária da Darkvi esgotada")
         dest = ctx.path("assets", f"{scene['id']}.png")
         stats: dict = {"_timer": timer, "_scene": scene["id"]} if timer else {}
+        stats.update(_budget=sel.budget, _record=sel.record_vision)  # teto de gasto da produção
         stats_all.append(stats)
         try:
             if timer:
