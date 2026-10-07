@@ -13,7 +13,7 @@ from ..directions import get_direction
 from ..providers import sfx as sfx_library
 from ..providers.music import library
 from ..worker.context import JobContext
-from .allocate import YOUTUBE_IMPLEMENTED, composition, targets
+from .allocate import YOUTUBE_IMPLEMENTED, composition, targets, youtube_first
 from .context import grade_for, video_look
 from .plan import load_bible
 from .report import write_report, write_visual_report
@@ -167,20 +167,25 @@ def run(ctx: JobContext) -> str:
 
     # Cenas sem asset são absorvidas pela vizinha (a anterior se estende).
     merged: list[dict] = []
+    # Cena sem asset: o tempo dela é dividido entre a anterior e a seguinte (estender só uma passaria do teto).
+    carry: float | None = None  # início herdado pela próxima cena com asset
     for s in plan["scenes"]:
         entry = selection.get(s["id"], {})
         has_asset = entry.get("asset") and (ctx.dir / entry["asset"]).exists()
         if not has_asset:
-            if merged:
-                merged[-1]["end"] = s["end"]
-                continue
-            s = {**s, "_pending_merge": True}
-        merged.append({**s, "entry": entry})
-    while merged and merged[0].get("_pending_merge"):  # primeira cena sem asset: a seguinte começa em 0
-        if len(merged) == 1:
-            raise RuntimeError("Nenhuma cena tem asset para renderizar")
-        merged[1]["start"] = merged[0]["start"]
-        merged.pop(0)
+            if merged and carry is None:
+                mid = (s["start"] + s["end"]) / 2
+                merged[-1]["end"] = mid
+                carry = mid
+            elif carry is None:
+                carry = s["start"]  # primeira cena sem asset: a seguinte começa no início
+            continue
+        merged.append({**s, "entry": entry, **({"start": carry} if carry is not None else {})})
+        carry = None
+    if not merged:
+        raise RuntimeError("Nenhuma cena tem asset para renderizar")
+    if carry is not None:  # últimas cenas sem asset: a anterior vai até o fim
+        merged[-1]["end"] = plan["scenes"][-1]["end"]
 
     transitions = params.get("transitions") or {"chapter": {"type": "fade",
                                                             "duration": params.get("crossfade_seconds", 0.3)}}
@@ -274,7 +279,9 @@ def run(ctx: JobContext) -> str:
         quote = (s.get("quote") or "").strip()
         if quote and dur >= 3.0 and start - last_quote >= params.get("quote_min_gap_seconds", 60):
             times = quote_word_times(quote, words, start, end) if words else None
-            if times is not None:
+            reason = "não está na narração" if times is None else (
+                "não cabe na tomada" if times[-1] > end - 0.3 else None)  # fala termina depois do corte
+            if times is not None and reason is None:
                 q_start = _q(max(start + 0.15, times[0] - 0.6))  # a tela escurece pouco antes da 1ª palavra
                 q_end = _q(min(end - 0.1, max(times[-1] + 1.6, q_start + 3.0), q_start + params.get(
                     "quote_max_seconds", 9.0)))
@@ -284,7 +291,7 @@ def run(ctx: JobContext) -> str:
                 mute.append([q_start, q_end])
                 last_quote = last_overlay = start
                 continue
-            ctx.issue("QUOTE_DROPPED", f"Citação descartada (não está na narração): \"{quote[:80]}\"", scene=s["id"])
+            ctx.issue("QUOTE_DROPPED", f"Citação descartada ({reason}): \"{quote[:80]}\"", scene=s["id"])
         if s.get("highlight") and start - last_overlay >= min_gap:
             d = params.get("overlay_duration_seconds", 3.5)
             o_start = _q(start + 0.4)
@@ -312,7 +319,7 @@ def run(ctx: JobContext) -> str:
     final = composition([s for s in plan["scenes"] if s["final_source"] not in ("missing", "migrate_ai")])
     total = sum(final.values()) or 1
     goal = targets(total, ctx.config)
-    if not YOUTUBE_IMPLEMENTED:  # já avisado como SCENE_MIGRATED; compara só real × IA
+    if not YOUTUBE_IMPLEMENTED or youtube_first():  # YouTube até a cota acabar: compara só real × IA
         goal["stock"] += goal.pop("youtube")
         final["stock"] += final.pop("youtube")
     deviations = [f"{k}: meta {goal[k] / total:.0%}, final {final[k] / total:.0%}"
