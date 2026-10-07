@@ -90,9 +90,13 @@ Artefatos de cada produção em `data/jobs/<id>/`: `audio/narration.wav`, `trans
 | Transcrição faster-whisper + alinhamento ao roteiro + fallback SRT | pronto |
 | Planejamento com Claude (saída estruturada) + fallback determinístico | pronto |
 | Interpretação do roteiro: Bíblia de Contexto com resumo, intenção, gênero e estrutura narrativa (raciocínio alto, 1 chamada por vídeo); cada cena declara o que transmite e quais personagens aparecem (aparência fixa) | pronto |
-| Automático, sem campo na tela: idioma (detectado no roteiro), buscas (inglês), estilo visual e representação de época (decididos pela Bíblia) | pronto |
+| Idioma do vídeo selecionável (26 idiomas de escrita latina ou cirílica), pré-preenchido com o detectado no roteiro; narrador, legendas e textos na tela seguem ele | pronto |
+| Automático, sem campo na tela: buscas (inglês), estilo visual e representação de época (decididos pela Bíblia) | pronto |
 | Seleção econômica: cache 7 dias, filtro técnico, top 8 por texto, folha de miniaturas no Gemini (1–2 chamadas/cena) | pronto |
-| YouTube CC com cota (fuso do Pacífico, 403 reativo) e fallback YouTube → bancos → fotos | pronto |
+| Visão reserva: sem cota do Gemini (ou com erro), o Claude avalia a folha de miniaturas e as imagens geradas; a escolha às cegas só acontece sem nenhuma das duas | pronto |
+| Prompt de imagem guiado pelo roteiro: abre com a frase do plano (visual_intent), traz o que o momento transmite, o estilo visual do vídeo e a aparência fixa dos personagens | pronto |
+| YouTube CC primeiro em toda cena real enquanto houver cota (fuso do Pacífico, 403 reativo), vídeos verticais/Shorts descartados antes da avaliação, e fallback YouTube → bancos → fotos | pronto |
+| Ritmo: tempo em tela perto da média pedida, teto de média × 1,5 por clipe (cenas longas viram tomadas com clipes diferentes, fragmentos curtos são juntados) | pronto |
 | Imagens IA via Darkvi com rate limiter 5/min e queda para bancos | pronto (adiantado da Fase 3) |
 | Direção Clássico com crossfade de capítulo, destaques e títulos | pronto (adiantado da Fase 4) |
 | Edição: transições por intenção (fade pelo preto, flash, dissolve), push-in em vídeo, moldura de foto, títulos animados (contador, máquina de escrever, letterbox), citação em tela cheia sincronizada, light leak, grão e vinheta | pronto |
