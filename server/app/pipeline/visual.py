@@ -126,6 +126,10 @@ CONTEXT (every scene lives in the context block that contains its units)
 
 - visual_intent: one English sentence of at most 25 words describing the exact shot (subject + action +
   setting + shot + light, and the style when it is not real footage).
+- queries come ONLY from the script's context: what the scene means (meaning), inside the bible's story, era,
+  place, people and visual_style. Never search isolated words of the sentence; a search must bring footage
+  that a viewer of THIS video would recognize as this moment of THIS story ("mexican rancher dry cattle" for an
+  1880s Sonora ranch, not "man horse").
 - queries: exactly 3 English stock-footage searches of 2 to 5 words, ALWAYS starting with the subject:
   1) subject + its most important detail (the most literal; also used on YouTube);
   2) subject + setting or action;
@@ -415,6 +419,27 @@ def _look_line(scene: dict, brief: dict) -> str:
     return f"Look: {'; '.join(parts)}." if parts else ""
 
 
+SHOT_WORDS = {"wide": "wide shot", "medium": "medium shot", "overhead": "overhead shot", "pov": "point-of-view shot"}
+
+
+def _head(scene: dict, fallback_parts: list[str]) -> str:
+    """Frase de abertura do prompt. Modelos de imagem entendem melhor uma frase que uma lista de palavras: usa o
+    visual_intent do planejamento (assunto + ação + cenário + enquadramento + luz) quando ele é uma frase de verdade;
+    senão, monta com os campos soltos."""
+    intent = (scene.get("visual_intent") or "").strip().rstrip(".")
+    if len(intent.split()) >= 6:
+        return intent
+    shot = scene.get("shot") or ""
+    parts = [p for p in fallback_parts if p] + ([SHOT_WORDS.get(shot, shot)] if shot else [])
+    return ", ".join(parts)
+
+
+def _moment(scene: dict) -> str:
+    """O que o momento transmite na história (interpretação do roteiro): orienta expressão, gesto e clima."""
+    meaning = (scene.get("meaning") or "").strip().rstrip(".")
+    return f"The moment: {brief_text(meaning, 160)}." if meaning else ""
+
+
 def brief_text(text: str | None, limit: int = 90) -> str:
     """Descrição longa do contexto cortada numa vírgula/ponto e vírgula, para o bloco de estilo caber no prompt."""
     text = (text or "").strip()
@@ -442,7 +467,7 @@ def build_period_prompt(scene: dict, brief: dict | None, extra_feedback: str | N
         subject_action = f"{scene['subject']}, {subject_action}"
     era = ctx.get("era") if re.search(r"\d", ctx.get("era") or "") else (ctx.get("era_label") or ctx.get("era"))
     place = ctx.get("place") or ""
-    base = ", ".join(x for x in [subject_action, scene.get("setting")] if x)
+    base = _head({**scene, "shot": ""}, [subject_action, scene.get("setting")])
     if place and place.split(",")[0].strip().lower() in base.lower():
         place = ""  # o cenário já diz o lugar: só a época
     head = ", ".join(x for x in [base, f"in {place}" if place else "", era or ""] if x)
@@ -454,6 +479,7 @@ def build_period_prompt(scene: dict, brief: dict | None, extra_feedback: str | N
     objects = ", ".join((ctx.get("objects") or [])[:3])
     entity = _entity_for(scene, brief)
     look = _look_line(scene, brief)
+    moment = _moment(scene)
     if style == "real_footage":
         block, block_short = period_style_block(ctx, period_look)
         style_avoid = ["cartoon", "illustration", "3D render", "CGI"]
@@ -475,6 +501,8 @@ def build_period_prompt(scene: dict, brief: dict | None, extra_feedback: str | N
                    ctx.get("transport") if "objects" in parts_on else ""]
         details = [d for d in details if d]
         parts = [head + (f", {mood}" if "mood" in parts_on and mood else "") + "."]
+        if moment and "mood" in parts_on:
+            parts.append(moment)
         if details:
             parts.append("Period-accurate details: " + ", ".join(details) + ".")
         if entity:
@@ -529,8 +557,10 @@ def build_image_prompt(scene: dict, brief: dict | None, extra_feedback: str | No
     if ctx.get("setting_type") == "historical":
         return build_period_prompt(scene, brief, extra_feedback, style, period_look, extra_avoid)
     if ctx or extra_avoid:
+        # anacronismos de um bloco atual/atemporal são genéricos ("medieval costume", "snow"): só os 3 primeiros,
+        # para o Avoid não diluir o prompt nem sugerir ao modelo coisas que nada têm a ver com a cena
         scene = {**scene, "must_avoid": list(dict.fromkeys(list(extra_avoid or []) + list(scene.get("must_avoid") or [])
-                                                           + list(ctx.get("anachronisms") or [])))}
+                                                           + list(ctx.get("anachronisms") or [])[:3]))}
     brief = brief or {}
     if ctx.get("place"):
         brief = {**brief, "region_culture": ", ".join(x for x in [ctx.get("place"), ctx.get("landscape")] if x),
@@ -538,9 +568,12 @@ def build_image_prompt(scene: dict, brief: dict | None, extra_feedback: str | No
     subject_action = scene.get("action") or scene.get("subject") or scene.get("visual_intent", "")
     if scene.get("subject") and scene["subject"].lower() not in subject_action.lower():
         subject_action = f"{scene['subject']}, {subject_action}"
-    head = ", ".join(x for x in [subject_action, scene.get("setting"), scene.get("shot")] if x)
+    head = _head(scene, [subject_action, scene.get("setting")])
     mood = scene.get("mood")
-    world = "; ".join(x for x in [brief.get("region_culture"), brief.get("visual_world")] if x)
+    moment = _moment(scene)
+    # lugar primeiro; o "mundo visual" da bíblia é uma lista longa e genérica: entra resumido e é o 1º a sair
+    world = "; ".join(x for x in [brief_text(brief.get("region_culture"), 110), brief_text(brief.get("visual_world"), 90)]
+                      if x)
     entity = _entity_for(scene, brief)
     look = _look_line(scene, brief)
     must_show = ", ".join(scene.get("must_show") or [])
@@ -555,11 +588,14 @@ def build_image_prompt(scene: dict, brief: dict | None, extra_feedback: str | No
         avoid_base = AVOID_ALWAYS + [a for a in AVOID_REAL if a not in drop and a != "plastic skin"]
     avoid = avoid_base + [a for a in scene.get("must_avoid") or [] if a not in avoid_base]
 
-    def assemble(with_mood: bool, block: str, avoid_items: list[str]) -> str:
-        parts = [head + (f", {mood}" if with_mood and mood else "") + ".", block]
-        if look and with_mood:
+    def assemble(on: set[str], block: str, avoid_items: list[str]) -> str:
+        parts = [head + (f", {mood}" if "mood" in on and mood else "") + "."]
+        if moment and "moment" in on:
+            parts.append(moment)
+        parts.append(block)
+        if look and "look" in on:
             parts.append(look)
-        if world:
+        if world and "world" in on:
             parts.append(f"Setting consistent with: {world}.")
         if entity:
             parts.append(entity)
@@ -570,22 +606,26 @@ def build_image_prompt(scene: dict, brief: dict | None, extra_feedback: str | No
         parts.append("Avoid: " + ", ".join(avoid_items) + ".")
         return " ".join(p for p in parts if p)
 
-    for with_mood, block in ((True, style_block), (False, style_block), (False, style_short)):
-        prompt = assemble(with_mood, block, avoid)
+    # o que vem do roteiro (momento, personagem, estilo do vídeo, lugar) sai por último; câmera longa e mood antes
+    steps = [({"mood", "moment", "look", "world"}, style_block), ({"moment", "look", "world"}, style_block),
+             ({"moment", "look", "world"}, style_short), ({"moment", "look"}, style_short),
+             ({"moment"}, style_short), (set(), style_short)]
+    for on, block in steps:
+        prompt = assemble(on, block, avoid)
         if len(prompt) <= PROMPT_LIMIT:
             return prompt
     if style == "real_footage":
-        prompt = assemble(False, "", avoid)
+        prompt = assemble(set(), "", avoid)
         if len(prompt) <= PROMPT_LIMIT:
             return prompt
     items = list(avoid)
     keep_block = "" if style == "real_footage" else style_short
     while len(items) > 5:  # nunca corta os 5 primeiros termos do Avoid
         items.pop()
-        prompt = assemble(False, keep_block, items)
+        prompt = assemble({"moment"}, keep_block, items)
         if len(prompt) <= PROMPT_LIMIT:
             return prompt
-    return assemble(False, keep_block, items)[:PROMPT_LIMIT]
+    return assemble(set(), keep_block, items)[:PROMPT_LIMIT]
 
 
 # ---------------------------------------------------------------- Etapa E: validação visual
