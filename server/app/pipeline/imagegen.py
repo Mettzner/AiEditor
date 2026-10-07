@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..providers.darkvi import images as darkvi_images
-from ..providers.llm import gemini
+from ..providers.llm import gemini, vision
 from .select.funnel import SceneContext, rate_local_image
 from .context import scene_anachronisms
 from .visual import build_image_prompt, scene_style, wanted_style
@@ -56,7 +56,7 @@ def generate_validated(scene: dict, brief: dict | None, style: str, dest: Path, 
     for attempt in (1, 2):
         prompt = build_image_prompt(scene, brief, feedback, look, period_look=period_look, extra_avoid=extra_avoid)
         darkvi_images.generate(prompt, dest, reference_key=reference_key)
-        if not gemini.available():
+        if not vision.available():
             return GeneratedImage(True, dest, prompt, None, "", attempt, style=look)
         try:
             note = rate_local_image(dest, ctx, cfg["gemini_model"], stats, key_hint=f"{dest.name}:{attempt}:{prompt}")
