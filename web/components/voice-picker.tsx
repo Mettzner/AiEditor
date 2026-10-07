@@ -43,13 +43,22 @@ function describe(v: Voice) {
     .join(" · ");
 }
 
-/** Dropdown com busca pelos narradores da Darkvi. Mostra só o nome; o id fica por trás. */
+function speaks(v: Voice, language: string) {
+  return v.language === language || v.languages.includes(language);
+}
+
+/**
+ * Dropdown com busca pelos narradores da Darkvi. Mostra só o nome; o id fica por trás. Com `language`, os
+ * narradores que falam o idioma do vídeo vêm primeiro e há um aviso se o escolhido não fala.
+ */
 export function VoicePicker({
   value,
   onChange,
+  language,
 }: {
   value: string | null;
   onChange: (voice: { id: string; name: string } | null) => void;
+  language?: string | null;
 }) {
   const [voices, setVoices] = useState<Voice[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -63,10 +72,12 @@ export function VoicePicker({
     return () => audio.current?.pause();
   }, []);
 
-  const items = useMemo(
-    () => ComboboxPrimitive.createItems(voices ?? [], { getValue: (v) => v.id, getLabel: (v) => v.name }),
-    [voices],
-  );
+  const items = useMemo(() => {
+    const list = voices ?? [];
+    const sorted = language ? [...list.filter((v) => speaks(v, language)), ...list.filter((v) => !speaks(v, language))]
+      : list;
+    return ComboboxPrimitive.createItems(sorted, { getValue: (v) => v.id, getLabel: (v) => v.name });
+  }, [voices, language]);
   const selected = voices?.find((v) => v.id === value) ?? null;
 
   function toggle(v: Voice | null) {
@@ -131,6 +142,11 @@ export function VoicePicker({
         </Button>
       </div>
       {selected && <p className="text-xs text-muted-foreground">{describe(selected)}</p>}
+      {selected && language && !speaks(selected, language) && (
+        <p className="text-xs text-amber-300">
+          Este narrador não lista {LANG[language] ?? language} entre seus idiomas; a pronúncia pode ficar estranha.
+        </p>
+      )}
     </div>
   );
 }
