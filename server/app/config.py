@@ -48,8 +48,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         {"id": "storyblocks", "enabled": False, "priority": 3},
         {"id": "shutterstock", "enabled": False, "priority": 4},
     ],
-    "youtube": {"enabled": True, "creative_commons_only": True, "daily_quota": 10_000, "quota_reserve": 500,
-                "max_duration": 1800},
+    # first: toda cena real tenta o YouTube primeiro enquanto houver cota no dia (zera à meia-noite do Pacífico);
+    # sem cota, vai direto para bancos de vídeo e imagens. Desligado, só a fatia youtube_pct do preset tenta.
+    "youtube": {"enabled": True, "first": True, "creative_commons_only": True, "daily_quota": 10_000,
+                "quota_reserve": 500, "max_duration": 1800},
     "ai_image_providers": [
         {"id": "darkvi", "enabled": True, "priority": 1},
     ],
@@ -64,6 +66,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "direct": {"provider": "anthropic", "model": "claude-sonnet-5-5", "effort": "low", "thinking": "off"},
         "rewrite": {"provider": "anthropic", "model": "claude-haiku-4-5", "effort": None, "thinking": "off"},
         "overlay": {"provider": "anthropic", "model": "claude-haiku-4-5", "effort": None, "thinking": "off"},
+        # IA de visão reserva: avalia a folha de miniaturas e as imagens geradas quando o Gemini não pode
+        # visão reserva (Gemini sem cota): Haiku custa metade do Sonnet por folha e julga miniaturas bem
+        "vision": {"provider": "anthropic", "model": "claude-haiku-4-5", "effort": None, "thinking": "off"},
         "cache_ttl": "5m",
     },
     "render": {
@@ -121,6 +126,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
                  "max_video_mb": 300, "min_photo_height": 500, "min_video_height": 240},
     "darkvi": {"remaining": None, "limit": None, "updated_at": None, "tts_poll_seconds": 3, "tts_timeout_seconds": 1800},
     "gemini": {"blocked_until": None, "blocked_reason": ""},
+    # Quem avalia clipes e imagens: "auto" (Gemini; sem cota ou com erro, Claude), "gemini" ou "claude".
+    # Sem nenhuma, a escolha é só pelo texto dos títulos (às cegas).
+    "vision": {"provider": "auto"},
+    # Teto de gasto com IA (Claude + Gemini) por produção, em US$; 0 = sem teto. Ao chegar perto, a visão pelo
+    # Claude para e o resto da seleção segue pelo ranking de texto (app/budget.py).
+    "budget": {"max_usd_per_production": 2.0},
+    # OpenAI (ChatGPT) como 2ª IA de visão, antes do Claude; só com a chave "openai" configurada
+    "openai": {"vision_model": "gpt-4.1-mini"},
     "music": {"library_dir": str(MUSIC_DIR), "default_volume_db": -22},
     # Efeitos sonoros: data/sfx/<categoria>/. Com chave do Freesound, baixa sons CC0 quando faltam; sem ela (ou
     # offline), usa sons sintetizados. allow_attribution aceita também CC BY (creditado no creditos.txt).
