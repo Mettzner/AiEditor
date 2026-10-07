@@ -251,7 +251,8 @@ def test_8_passo4_mostra_cenas_do_youtube_que_cabem(env):
     cfg = ProductionConfig(**Preset(real_pct=100, youtube_pct=50, avg_scene_seconds=6).model_dump(),
                            title="t", channel_name="t")
     q = estimate(cfg, "word " * 1500)["quotas"]
-    assert q["youtube_scenes"] == 50 and q["youtube_scenes_fit"] == 4 and q["youtube_available"] == 500
+    # YouTube primeiro: as 100 cenas reais tentam o YouTube; só 4 cabem na cota que sobrou
+    assert q["youtube_scenes"] == 100 and q["youtube_scenes_fit"] == 4 and q["youtube_available"] == 500
 
 
 def test_visao_falhando_nao_derruba(env):
@@ -291,7 +292,8 @@ def test_download_falhando_cai_para_proxima_fonte(env):
     ctx = make_ctx()
     entry = sel_mod.Selector(ctx).select_scene(scene(source="youtube"))
     assert entry["source_used"] == "stock"
-    assert "SCENE_NO_CANDIDATES" in issues(ctx) and "SCENE_MIGRATED" in issues(ctx)
+    # YouTube primeiro: cair nos bancos é o caminho esperado, não uma migração
+    assert "SCENE_NO_CANDIDATES" in issues(ctx) and "SCENE_MIGRATED" not in issues(ctx)
 
 
 def test_download_tenta_proximo_colocado_antes_de_trocar_de_fonte(env):
