@@ -8,9 +8,11 @@ from typing import Callable
 
 from sqlmodel import select
 
+from .. import artifacts
 from ..db import session_scope
 from ..models import Production, ProductionConfig, ProductionStep, now
 from ..pipeline import audio, direct, generate, plan, render, select as select_step, transcribe, upload
+from ..providers.llm.base import BatchPending, set_current_production
 from .context import Cancelled, JobContext, StepError
 
 log = logging.getLogger("aieditor.runner")
@@ -88,6 +90,7 @@ def run_production(production_id: int, render_lock: threading.Semaphore) -> None
     stale = release_stale(production_id)  # reservas abertas de uma execução que morreu não seguram o teto
     if stale:
         log.info("produção %s: %d reserva(s) de custo órfã(s) liberada(s)", production_id, stale)
+    set_current_production(production_id)
     config = ProductionConfig.model_validate(production.config)
     weights = step_weights(config)
     ctx = JobContext(production, weights, render_lock)
@@ -99,14 +102,33 @@ def run_production(production_id: int, render_lock: threading.Semaphore) -> None
                 _set_step_row(production_id, sid, status="skipped")
                 continue
             if sid in done_steps:
-                continue
+                ok, why = artifacts.still_valid(sid, ctx.dir, ctx.script, production.config, ctx.settings)
+                if ok:
+                    continue
+                # concluída, mas as entradas mudaram ou a saída sumiu: refaz esta (as seguintes se invalidam
+                # sozinhas pelos hashes; etapas independentes da mudança continuam aproveitadas)
+                log.info("produção %s: etapa %s refeita (%s)", production_id, sid, why)
+                ctx.issue("STEP_INVALIDATED", f"Etapa '{label}' refeita: {why}", severity="info")
             ctx.check_cancel()
             ctx.begin_step(sid, label)
             _set_step_row(production_id, sid, status="running", started_at=now(), finished_at=None)
             log.info("produção %s: etapa %s", production_id, sid)
             output = fn(ctx)
+            artifacts.record(sid, ctx.dir, ctx.script, production.config, ctx.settings)
             _set_step_row(production_id, sid, status="done", finished_at=now(), output=output)
         _finish(production_id, status="done", progress=100.0, step="done", step_label="Concluído")
+    except BatchPending as e:
+        # lote da Batch API ainda processando: a etapa volta a pendente e a produção espera fora do worker
+        _set_step_row(production_id, ctx._step or "?", status="pending")
+        with session_scope() as s:
+            p = s.get(Production, production_id)
+            if p and p.status == "running":
+                p.status, p.step_label = "waiting_provider", "Aguardando lote do provedor (até 24 h)"
+                p.resume_at = e.retry_at or now()
+                p.updated_at = now()
+                s.add(p)
+                s.commit()
+        log.info("produção %s aguardando lote %s até %s", production_id, e.batch_id, e.retry_at)
     except Cancelled:
         _finish(production_id, status="cancelled", step_label="Cancelado")
     except StepError as e:

@@ -15,6 +15,9 @@
 """
 from __future__ import annotations
 
+import hashlib
+import json
+
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -150,6 +153,8 @@ def _render(ctx: JobContext, tl: dict) -> str:
     def raw_path(sid: str) -> Path:
         return rdir / (f"{sid}.raw.mp4" if sid in xin else f"{sid}.mp4")
 
+    # 0) intermediário de cena que mudou (asset, trecho, movimento, transição) é refeito; o resto é aproveitado
+    invalidate_changed_scenes(ctx, scenes, rdir, xin)
     # 1) normalização paralela
     todo = [s for s in scenes if not final_path(s["id"]).exists() and not raw_path(s["id"]).exists()]
     done = n - len(todo)
@@ -245,6 +250,37 @@ def _render(ctx: JobContext, tl: dict) -> str:
         except ffmpeg.FFmpegError as e2:
             raise StepError("RENDER_FAILED", f"Falha na composição final: {e2}", e2.log) from e2
     return str(out)
+
+
+def scene_render_fp(ctx: JobContext, scene: dict) -> str:
+    from ...artifacts import fingerprint
+
+    asset = ctx.dir / scene["asset"] if scene.get("asset") else None
+    data = {k: v for k, v in scene.items() if k not in ("start", "end")}
+    data["duration"] = round(scene["end"] - scene["start"], 3)
+    data["asset_fp"] = fingerprint(asset) if asset else None
+    return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()[:20]
+
+
+def invalidate_changed_scenes(ctx: JobContext, scenes: list[dict], rdir: Path, xin: dict[str, str]) -> list[str]:
+    """Apaga os intermediários das cenas cuja impressão digital mudou (e a transição da cena seguinte, que usa a
+    anterior). Sem impressão gravada (render antigo), o intermediário existente é aproveitado como antes."""
+    changed = []
+    nxt = {prev: sid for sid, prev in xin.items()}
+    for s in scenes:
+        sid = s["id"]
+        fp_file = rdir / f"{sid}.fp"
+        fp = scene_render_fp(ctx, s)
+        old = fp_file.read_text(encoding="utf-8").strip() if fp_file.exists() else None
+        if old is not None and old != fp:
+            changed.append(sid)
+            for name in (f"{sid}.mp4", f"{sid}.raw.mp4", f"{sid}.ov.mp4"):
+                (rdir / name).unlink(missing_ok=True)
+            if sid in nxt:  # a transição de entrada da próxima cena foi feita com esta
+                (rdir / f"{nxt[sid]}.mp4").unlink(missing_ok=True)
+                (rdir / f"{nxt[sid]}.ov.mp4").unlink(missing_ok=True)
+        fp_file.write_text(fp, encoding="utf-8")
+    return changed
 
 
 def _bake_overlays(ctx: JobContext, scene_mp4: Path, scene_start: float, items: list[tuple[dict, Path]],
