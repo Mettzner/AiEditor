@@ -11,6 +11,7 @@ from sqlmodel import select
 
 from ..config import job_dir, load_settings
 from ..db import session_scope
+from ..fsutil import atomic_write_text
 from ..issues import severity_of
 from ..models import Issue, Production, ProductionConfig, now
 
@@ -54,11 +55,7 @@ class JobContext:
         return json.loads(self.path(name).read_text(encoding="utf-8"))
 
     def write_json(self, name: str, data: Any) -> Path:
-        p = self.path(name)
-        tmp = p.with_suffix(p.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(p)
-        return p
+        return atomic_write_text(self.path(name), json.dumps(data, indent=2, ensure_ascii=False))
 
     # ---- progresso ------------------------------------------------------
     def begin_step(self, step: str, label: str) -> None:
@@ -129,9 +126,7 @@ class JobContext:
                 "by_task": by_task,
                 "top_task": max(by_task, key=lambda k: by_task[k]["cost"]) if by_task else None,
             }
-            tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
-            tmp.replace(path)
+            atomic_write_text(path, json.dumps(data, indent=1, ensure_ascii=False))
         self.add_cost(entry.get("cost") or 0)
 
     def add_cost(self, amount: float) -> None:

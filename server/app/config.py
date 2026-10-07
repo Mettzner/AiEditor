@@ -175,10 +175,10 @@ def load_settings() -> dict[str, Any]:
 
 
 def save_settings(settings: dict[str, Any]) -> dict[str, Any]:
-    with _lock:
-        tmp = SETTINGS_PATH.with_suffix(".tmp")
-        tmp.write_text(json.dumps(settings, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(SETTINGS_PATH)
+    from .fsutil import atomic_write_text
+
+    with _lock:  # API e worker gravam este arquivo: temporário exclusivo por escritor
+        atomic_write_text(SETTINGS_PATH, json.dumps(settings, indent=2, ensure_ascii=False))
     return settings
 
 
