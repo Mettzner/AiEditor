@@ -128,3 +128,51 @@ def test_idioma_e_detectado_e_campos_automaticos_ignoram_a_tela():
         cfg = _build_config(s, ch.id, "t", dict(overrides), "tts", script)
     assert cfg.lang == "pt" and cfg.language == "pt" and cfg.search_language == "en"
     assert cfg.visual_style == "" and cfg.period_look == "cinematic" and cfg.avg_scene_seconds == 5
+
+
+def test_idioma_escolhido_na_tela_vale_e_buscas_seguem_em_ingles():
+    with session_scope() as s:
+        ch = Channel(name="it", preset=Preset().model_dump())
+        s.add(ch)
+        s.commit()
+        s.refresh(ch)
+        script = "Era una notte buia e tempestosa quando il vecchio pescatore tornò al porto con le reti vuote."
+        cfg = _build_config(s, ch.id, "t", {"video_language": "it"}, "tts", script)
+        auto = _build_config(s, ch.id, "t", {"video_language": "xx"}, "tts", script)  # código inválido: detecta
+    assert cfg.lang == "it" and cfg.search_language == "en"
+    assert auto.lang == "it"
+
+
+def test_rotas_de_idioma():
+    from app.api.productions import DetectIn, detect_language_route, languages
+
+    opts = languages()
+    assert {"value": "it", "label": "Italiano"} in opts and len(opts) >= 20
+    assert [o["label"] for o in opts] == sorted(o["label"] for o in opts)
+    assert detect_language_route(DetectIn(script="Det var en mørk og stormfull natt da den gamle fiskeren kom "
+                                                 "tilbake til havnen."))["language"] == "no"
+
+
+def test_salvar_padrao_do_canal_guarda_o_idioma_do_video(monkeypatch):
+    import json
+
+    from fastapi.testclient import TestClient
+
+    from app import whisper_models
+    from app.main import app
+
+    monkeypatch.setattr(whisper_models, "model_ready", lambda m: True)
+    with session_scope() as s:
+        ch = Channel(name="padrao", preset=Preset(tts_voice="v1").model_dump())
+        s.add(ch)
+        s.commit()
+        s.refresh(ch)
+        cid = ch.id
+    script = "Era una notte buia e tempestosa quando il vecchio pescatore tornò al porto con le reti vuote."
+    r = TestClient(app).post("/api/productions", data={
+        "channel_id": cid, "title": "t", "script": script, "save_as_default": "true",
+        "config": json.dumps({"video_language": "it", "avg_scene_seconds": 5})})
+    assert r.status_code == 200, r.text
+    with session_scope() as s:
+        preset = s.get(Channel, cid).preset
+    assert preset["default_video_language"] == "it" and preset["avg_scene_seconds"] == 5
