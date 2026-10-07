@@ -1,60 +1,212 @@
-"""Busca multi-fonte com cache no SQLite (search_cache, validade em selection.search_cache_days).
+"""Busca multi-fonte com cache no SQLite (search_cache) e single-flight.
 
-Atende à exigência de cache do Pixabay (≥ 24 h) e evita gastar cota repetindo buscas.
+Regras (Fase A do plano de melhorias):
+- O cache é lido ANTES de qualquer verificação de cota: com a cota esgotada e um resultado válido no cache, a busca
+  é atendida sem chamada externa. A cota só é reservada pelo `fetch` (busca remota).
+- Validade por provedor (settings.selection.search_cache_ttl_hours, com "default"); o Pixabay exige cache ≥ 24 h.
+  Linhas vencidas são apagadas por `purge_expired()` (dados de API não ficam guardados indefinidamente).
+- Resultado vazio de verdade é cacheado (status "empty"); falha transitória (rede, 5xx) vira status "error" com TTL
+  curto (search_error_ttl_seconds) e é relançada para quem consultar nesse intervalo. Falta de cota nunca é
+  cacheada: depende do saldo, não da consulta.
+- Single-flight: buscas idênticas ao mesmo tempo fazem UM fetch. Dentro do processo, um lock por chave; entre
+  processos (API e worker), uma concessão (cache_lease) com validade; quem não a obtém espera o resultado no cache.
+- stats recebe: searches (fetches remotos), cache_hit, cache_miss, cache_empty, cache_error, quota_blocked.
 """
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
+import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
+from sqlmodel import select
 
 from ...config import load_settings
-from ...db import session_scope
+from ...db import engine, session_scope
 from ...models import SearchCache, now
 from ...providers.http import ProviderError
 from ...providers.stock.base import Candidate, candidate_from_dict
 
-
 _stats_lock = threading.Lock()
+_locks_guard = threading.Lock()
+_key_locks: dict[str, threading.Lock] = {}
+OWNER = f"{os.getpid()}:{uuid.uuid4().hex[:8]}"
+LEASE_SECONDS = 90.0
+WAIT_POLL = 0.25
+DEFAULT_TTL_HOURS = {"default": 168, "pixabay": 168, "pexels": 168, "youtube": 168, "archives": 336}
+
+
+class CachedProviderError(ProviderError):
+    """A mesma busca falhou há pouco (cache negativo de TTL curto)."""
 
 
 def _norm(query: str) -> str:
     return " ".join(query.lower().split())
 
 
-def cache_key(provider: str, kind: str, query: str, per_page: int, lang: str) -> str:
-    return hashlib.sha1(f"{provider}|{kind}|{_norm(query)}|{per_page}|{lang}".encode()).hexdigest()
+def cache_key(provider: str, kind: str, query: str, per_page: int, lang: str, page: int = 0) -> str:
+    raw = f"{provider}|{kind}|{_norm(query)}|{per_page}|{lang}" + (f"|p{page}" if page else "")
+    return hashlib.sha1(raw.encode()).hexdigest()
 
 
-def cached_search(provider: str, kind: str, query: str, per_page: int, lang: str,
-                  fetch: Callable[[], list[Candidate]], stats: dict | None = None) -> list[Candidate]:
-    key = cache_key(provider, kind, query, per_page, lang)
-    days = float(load_settings()["selection"].get("search_cache_days", 7))
+def ttl_hours(provider: str) -> float:
+    sel = load_settings()["selection"]
+    table = {**DEFAULT_TTL_HOURS, **(sel.get("search_cache_ttl_hours") or {})}
+    if provider in table:
+        return float(table[provider])
+    if "search_cache_days" in sel:  # configuração antiga, valor único em dias
+        return float(sel["search_cache_days"]) * 24
+    return float(table["default"])
+
+
+def _error_ttl() -> float:
+    return float(load_settings()["selection"].get("search_error_ttl_seconds", 120))
+
+
+def _aware(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _bump(stats: dict | None, key: str, n: int = 1) -> None:
+    if stats is None:
+        return
+    with _stats_lock:
+        stats[key] = stats.get(key, 0) + n
+
+
+def _read(key: str, provider: str) -> tuple[str, SearchCache | None]:
+    """("hit" | "error" | "miss", linha). Linhas antigas sem expires_at vencem pelo created_at + TTL."""
     with session_scope() as s:
         row = s.get(SearchCache, key)
-        created = row.created_at if row else None
-        if created is not None and created.tzinfo is None:
-            created = created.replace(tzinfo=now().tzinfo)
-        if row and created and now() - created < timedelta(days=days):
-            return [candidate_from_dict(d) for d in row.results]
-    results = fetch()
-    if stats is not None:
-        with _stats_lock:
-            stats["searches"] = stats.get("searches", 0) + 1
+        if row is None:
+            return "miss", None
+        s.expunge(row)
+    expires = _aware(row.expires_at)
+    if expires is None:
+        created = _aware(row.created_at) or now()
+        expires = created + timedelta(hours=ttl_hours(provider))
+    if now() >= expires:
+        return "miss", row
+    return ("error" if row.status == "error" else "hit"), row
+
+
+def _key_lock(key: str) -> threading.Lock:
+    with _locks_guard:
+        lock = _key_locks.get(key)
+        if lock is None:
+            lock = _key_locks[key] = threading.Lock()
+        return lock
+
+
+def _acquire_lease(key: str) -> bool:
+    t = time.time()
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM cachelease WHERE key = :k AND expires_at <= :t"), {"k": key, "t": t})
+        res = conn.execute(text("INSERT OR IGNORE INTO cachelease (key, owner, expires_at) VALUES (:k, :o, :e)"),
+                           {"k": key, "o": OWNER, "e": t + LEASE_SECONDS})
+        return res.rowcount == 1
+
+
+def _release_lease(key: str) -> None:
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM cachelease WHERE key = :k AND owner = :o"), {"k": key, "o": OWNER})
+
+
+def _store(key: str, provider: str, query: str, results: list[Candidate] | None, status: str,
+           error: str | None = None, next_page_token: str | None = None) -> None:
+    ttl = timedelta(seconds=_error_ttl()) if status == "error" else timedelta(hours=ttl_hours(provider))
     with session_scope() as s:
         row = s.get(SearchCache, key) or SearchCache(key=key, provider=provider, query=_norm(query))
-        row.results = [c.to_dict() for c in results]
+        row.results = [c.to_dict() for c in results or []]
         row.created_at = now()
+        row.expires_at = now() + ttl
+        row.status = status
+        row.error = error
+        row.next_page_token = next_page_token
         s.add(row)
         try:
             s.commit()
         except IntegrityError:  # outra cena gravou a mesma busca ao mesmo tempo: o resultado já está no cache
             s.rollback()
-    return results
+
+
+def _serve(state: str, row: SearchCache, stats: dict | None) -> list[Candidate]:
+    if state == "error":
+        _bump(stats, "cache_error")
+        raise CachedProviderError(f"busca falhou há pouco (cache de erro): {row.error}")
+    _bump(stats, "cache_hit")
+    if row.status == "empty":
+        _bump(stats, "cache_empty")
+    return [candidate_from_dict(d) for d in row.results]
+
+
+def cached_fetch(provider: str, kind: str, query: str, per_page: int, lang: str,
+                 fetch: Callable[[], tuple[list[Candidate], str | None]], stats: dict | None = None,
+                 page: int = 0) -> tuple[list[Candidate], str | None]:
+    """Como cached_search, para fetches que também devolvem o token da próxima página."""
+    key = cache_key(provider, kind, query, per_page, lang, page)
+    state, row = _read(key, provider)
+    if state != "miss" and row is not None:
+        return _serve(state, row, stats), row.next_page_token
+    with _key_lock(key):  # single-flight entre as threads deste processo
+        state, row = _read(key, provider)
+        if state != "miss" and row is not None:
+            return _serve(state, row, stats), row.next_page_token
+        while not _acquire_lease(key):  # outro processo está buscando: espera o resultado (ou a concessão vencer)
+            time.sleep(WAIT_POLL)
+            state, row = _read(key, provider)
+            if state != "miss" and row is not None:
+                return _serve(state, row, stats), row.next_page_token
+        try:
+            state, row = _read(key, provider)  # pode ter chegado entre a espera e a concessão
+            if state != "miss" and row is not None:
+                return _serve(state, row, stats), row.next_page_token
+            _bump(stats, "cache_miss")
+            try:
+                results, next_token = fetch()
+            except ProviderError as e:
+                from ...providers.youtube.client import CredentialError, QuotaExhausted
+
+                if isinstance(e, QuotaExhausted):
+                    _bump(stats, "quota_blocked")
+                elif not isinstance(e, CredentialError):  # credencial não é transitória: não cacheia
+                    _store(key, provider, query, None, "error", str(e)[:300])
+                raise
+            _bump(stats, "searches")
+            _store(key, provider, query, results, "ok" if results else "empty", next_page_token=next_token)
+            return results, next_token
+        finally:
+            _release_lease(key)
+
+
+def cached_search(provider: str, kind: str, query: str, per_page: int, lang: str,
+                  fetch: Callable[[], list[Candidate]], stats: dict | None = None) -> list[Candidate]:
+    return cached_fetch(provider, kind, query, per_page, lang, lambda: (fetch(), None), stats)[0]
+
+
+def purge_expired(grace_hours: float = 0) -> int:
+    """Apaga resultados vencidos (respeita o TTL de cada provedor). Devolve quantas linhas saíram."""
+    removed = 0
+    cutoff_now = now() - timedelta(hours=grace_hours)
+    with session_scope() as s:
+        for row in list(s.exec(select(SearchCache))):
+            expires = _aware(row.expires_at) or ((_aware(row.created_at) or now())
+                                                 + timedelta(hours=ttl_hours(row.provider)))
+            if expires <= cutoff_now:
+                s.delete(row)
+                removed += 1
+        s.commit()
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM cachelease WHERE expires_at <= :t"), {"t": time.time()})
+    return removed
 
 
 def search_all(providers: list, queries: list[str], per_page: int, lang: str = "en", photos: bool = False,

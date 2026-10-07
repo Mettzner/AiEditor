@@ -9,7 +9,8 @@ import pytest
 from sqlmodel import delete, select
 
 from app.db import init_db, session_scope
-from app.models import (Channel, Issue, Preset, Production, ProductionConfig, SearchCache, UsedAsset, VisionCache,
+from app.models import (Channel, Issue, Preset, Production, ProductionConfig, QuotaUsage, SearchCache, UsedAsset,
+                        VisionCache,
                         YtQuota)
 from app.pipeline import select as sel_mod
 from app.pipeline.select import funnel
@@ -105,7 +106,7 @@ class FakeLLM:
 @pytest.fixture
 def env(monkeypatch):
     with session_scope() as s:
-        for model in (SearchCache, VisionCache, YtQuota, Issue, UsedAsset):
+        for model in (SearchCache, VisionCache, YtQuota, QuotaUsage, Issue, UsedAsset):
             s.exec(delete(model))
         s.commit()
     stock = [FakeStock("pexels"), FakeStock("pixabay")]
@@ -174,15 +175,32 @@ def test_2_cache_zero_buscas_e_zero_visao_na_segunda_vez(env):
 
 
 def test_3_cota_preventiva_nao_chama_youtube(env):
-    with session_scope() as s:
-        s.add(YtQuota(day=quota.pacific_day(), used=9450))
-        s.commit()
+    quota.spend(95, bucket="search")  # 100 buscas/dia − reserva de 5 = nenhuma busca livre
     hits = []
     env["monkeypatch"].setattr(yt, "request", lambda *a, **k: hits.append(a) or pytest.fail("chamou o YouTube"))
     ctx = make_ctx()
     entry = sel_mod.Selector(ctx).select_scene(scene(source="youtube"))
     assert not hits and entry["source_used"] == "stock"
     assert "YOUTUBE_QUOTA_FALLBACK" in issues(ctx)
+
+
+def test_3b_cota_esgotada_usa_resultado_do_youtube_em_cache(env):
+    """A1: a decisão lê o cache antes da cota; com a cota zerada e cache válido, usa o YouTube sem chamada."""
+    from app.pipeline.select.search import cached_search
+    from app.providers.stock.base import Candidate
+
+    c = Candidate(provider="youtube", external_id="cachedvid", title="dark country road at night fog", duration=60,
+                  width=1280, height=720, page_url="https://www.youtube.com/watch?v=cachedvid", thumbnail=None,
+                  preview_frames=["https://i.ytimg.com/vi/cachedvid/hq1.jpg"], frame_positions=[0.5])
+    per_page = int(sel_mod._mode_cfg(sel_mod.load_settings()["selection"], "fast")["youtube_results_per_query"])
+    cached_search("youtube", "video", "dark country road", per_page, "en", lambda: [c])
+    quota.mark_exhausted(bucket="search")
+    env["monkeypatch"].setattr(yt, "request", lambda *a, **k: pytest.fail("chamou o YouTube"))
+    env["monkeypatch"].setattr(yt, "download_segment", lambda vid, a, b, dest: dest.write_bytes(b"v") or dest)
+    ctx = make_ctx()
+    entry = sel_mod.Selector(ctx).select_scene(scene(source="youtube"))
+    assert entry["source_used"] == "youtube" and entry["external_id"] == "cachedvid"
+    assert "YOUTUBE_QUOTA_FALLBACK" not in issues(ctx)
 
 
 def test_4_cota_reativa_403_e_cenas_seguintes_nao_chamam(env):
@@ -245,14 +263,13 @@ def test_7_sem_repeticao_no_mesmo_video(env):
 
 def test_8_passo4_mostra_cenas_do_youtube_que_cabem(env):
     from app.estimate import estimate
-    with session_scope() as s:
-        s.add(YtQuota(day=quota.pacific_day(), used=9000))  # sobram 500 → 4 buscas
-        s.commit()
+    quota.spend(91, bucket="search")  # 100 − reserva 5 − 91 = 4 buscas
     cfg = ProductionConfig(**Preset(real_pct=100, youtube_pct=50, avg_scene_seconds=6).model_dump(),
                            title="t", channel_name="t")
     q = estimate(cfg, "word " * 1500)["quotas"]
     # YouTube primeiro: as 100 cenas reais tentam o YouTube; só 4 cabem na cota que sobrou
-    assert q["youtube_scenes"] == 100 and q["youtube_scenes_fit"] == 4 and q["youtube_available"] == 500
+    assert q["youtube_scenes"] == 100 and q["youtube_scenes_fit"] == 4 and q["youtube_available"] == 4
+    assert q["youtube_quota_unit"] == "calls" and q["youtube_units_needed"] == 100
 
 
 def test_visao_falhando_nao_derruba(env):

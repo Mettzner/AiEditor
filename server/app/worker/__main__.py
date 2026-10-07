@@ -44,6 +44,12 @@ def _claim_next() -> int | None:
 def main() -> None:
     init_db()
     _recover()
+    try:  # dados de API vencidos não ficam guardados (TTL por provedor)
+        from ..pipeline.select.search import purge_expired
+
+        log.info("cache de busca: %d resultado(s) vencido(s) removido(s)", purge_expired())
+    except Exception as e:  # noqa: BLE001
+        log.warning("limpeza do cache de busca falhou: %s", e)
     max_parallel = int(load_settings()["worker"]["max_parallel_productions"])
     pool = ThreadPoolExecutor(max_workers=max_parallel, thread_name_prefix="prod")
     active: dict[int, Future] = {}

@@ -40,7 +40,6 @@ from ...providers.llm.base import call_llm, failed_usage
 from ...providers.stock import enabled_providers
 from ...providers.stock.archives import ARCHIVES
 from ...providers.youtube import client as youtube
-from ...providers.youtube import quota as yt_quota
 from ...worker.context import JobContext, StepError
 from ..allocate import youtube_first
 from ..context import HISTORICAL, STRATEGY_LABEL, is_historical, scene_anachronisms, strategy_order, video_look
@@ -137,7 +136,8 @@ class Selector:
         # teto de gasto: o Claude só avalia clipes enquanto a produção couber no orçamento (app/budget.py)
         self.budget = VisionBudget(ctx.production_id)
         self.budget_reported = False
-        self.totals: dict = {"searches": 0, "vision_calls": 0, "vision_failed": 0, "vision_cost": 0.0}
+        self.totals: dict = {"searches": 0, "vision_calls": 0, "vision_failed": 0, "vision_cost": 0.0, "cache_hit": 0,
+                             "cache_miss": 0, "cache_empty": 0, "cache_error": 0, "quota_blocked": 0}
 
     def record_vision(self, usage) -> None:
         """Chamada paga do Claude na visão: entra no llm_usage.json e no custo da produção."""
@@ -219,9 +219,10 @@ class Selector:
         _, allowed = scene_style(scene, self.media_style)
         if source == "youtube":
             out = []
+            yt_per_page = int(self.cfg.get("youtube_results_per_query", 50))
             for q in queries[: int(self.cfg["youtube_queries_per_scene"])]:
-                out += cached_search("youtube", "video", q, per_page, lang,
-                                     lambda q=q: youtube.search(q, per_page=per_page, lang=lang), stats)
+                out += cached_search("youtube", "video", q, yt_per_page, lang,
+                                     lambda q=q: youtube.search(q, per_page=yt_per_page, lang=lang), stats)
             return out
         if source == "archive":
             feas = (scene.get("context") or {}).get("footage_feasibility")
@@ -420,10 +421,8 @@ class Selector:
                     return d
                 continue
             if source == "youtube":
+                # sem pré-checagem de cota: o cache é lido primeiro e só a busca remota reserva cota (A1)
                 if not self.youtube_on:
-                    continue
-                if not yt_quota.can_search():
-                    self._quota_fallback(scene)
                     continue
             elif source == "archive":
                 if not self.archives_on:
@@ -449,7 +448,19 @@ class Selector:
                         again = self._try_source(source, scene, previous, stats, d.queries, d.must_avoid)
                         if again and again.score > choice.score:
                             choice = again
+            except youtube.CredentialError as e:
+                with self.lock:
+                    first = self.youtube_on
+                    self.youtube_on = False
+                if first:
+                    self.ctx.issue("PROVIDER_AUTH", "O YouTube recusou a chave (não é falta de cota): as próximas cenas "
+                                   "usam as outras fontes. Confira a chave em Configuração.", scene=scene["id"],
+                                   detail=str(e))
+                continue
             except youtube.QuotaExhausted as e:
+                if e.kind == "minute":  # limite por minuto: esta cena segue a cadeia; as próximas tentam de novo
+                    stats["youtube_minute_blocked"] = stats.get("youtube_minute_blocked", 0) + 1
+                    continue
                 if e.reactive:
                     with self.lock:
                         first = not self.reactive_quota_reported
@@ -638,8 +649,9 @@ class Selector:
             if stats.get("_accounted"):
                 return
             stats["_accounted"] = True
-            for k in ("searches", "vision_calls", "vision_failed"):
-                self.totals[k] += stats.get(k, 0)
+            for k in ("searches", "vision_calls", "vision_failed", "cache_hit", "cache_miss", "cache_empty",
+                      "cache_error", "quota_blocked", "youtube_minute_blocked"):
+                self.totals[k] = self.totals.get(k, 0) + stats.get(k, 0)
             self.totals["vision_cost"] += stats.get("vision_cost", 0.0)
             if stats.get("vision_error"):
                 self.totals["vision_error"] = stats["vision_error"]
@@ -824,7 +836,9 @@ def run(ctx: JobContext) -> str:
     report = sel.timer.report(time.perf_counter() - started)
     report.update(mode=ctx.config.selection_mode, real_scenes=len(todo), ai_scenes=len(ai_scenes),
                   decide_seconds=round(t_decide, 2), select_seconds_without_ai=round(t_select, 2),
-                  vision_calls=t["vision_calls"], searches=t["searches"])
+                  vision_calls=t["vision_calls"], searches=t["searches"],
+                  search_cache={k: t.get(k, 0) for k in ("cache_hit", "cache_miss", "cache_empty", "cache_error",
+                                                         "quota_blocked", "youtube_minute_blocked")})
     ctx.write_json("timing_report.json", report)
     log.info("seleção (%s): %.1fs no total, %.1fs para avaliar %d cena(s) reais, %d chamada(s) de visão, "
              "%d busca(s); mais lentas: %s", report["mode"], report["wall_seconds"], t_decide, len(todo),
